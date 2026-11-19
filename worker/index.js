@@ -20,31 +20,81 @@ const clientIp = (req) => req.headers.get('cf-connecting-ip') || req.headers.get
 
 // ── 自动初始化：首次请求时建表（省掉手工粘 SQL）──────────────
 let schemaReady = false;
-async function ensureSchema(env, store) {
+let schemaError = null;
+
+/** 把一段 SQL 拆成单条语句（跳过注释，忽略字符串里的分号） */
+function splitStatements(sql) {
+  const cleaned = sql
+    .split('\n')
+    .filter((line) => !/^\s*--/.test(line))
+    .join('\n');
+  const out = [];
+  let cur = '';
+  let inStr = false;
+  for (let i = 0; i < cleaned.length; i++) {
+    const ch = cleaned[i];
+    if (ch === "'") {
+      if (inStr && cleaned[i + 1] === "'") { cur += "''"; i++; continue; }
+      inStr = !inStr;
+      cur += ch;
+      continue;
+    }
+    if (ch === ';' && !inStr) {
+      const s = cur.trim();
+      if (s) out.push(s);
+      cur = '';
+      continue;
+    }
+    cur += ch;
+  }
+  const tail = cur.trim();
+  if (tail) out.push(tail);
+  return out;
+}
+
+async function runStatements(env, sql, label) {
+  const stmts = splitStatements(sql);
+  let ok = 0;
+  const errors = [];
+  for (const s of stmts) {
+    try {
+      await env.DB.prepare(s).run();
+      ok++;
+    } catch (err) {
+      const msg = String(err.message || err);
+      // 已存在属于正常（可重复执行）
+      if (/already exists|duplicate column/i.test(msg)) { ok++; continue; }
+      errors.push(`${msg} | ${s.slice(0, 60)}`);
+    }
+  }
+  if (errors.length) {
+    console.error(`[db] ${label} ${errors.length} 条失败：`, errors.slice(0, 3).join(' ;; '));
+  } else {
+    console.log(`[db] ${label} 完成，${ok} 条`);
+  }
+  return errors;
+}
+
+async function ensureSchema(env) {
   if (schemaReady) return;
   try {
-    // 表已存在就什么都不做
     await env.DB.prepare('SELECT 1 FROM users LIMIT 1').first();
     schemaReady = true;
+    schemaError = null;
     return;
   } catch { /* 表不存在，继续建 */ }
 
-  try {
-    await env.DB.exec(SCHEMA_SQL);
-    console.log('[db] 已自动建表');
-  } catch (err) {
-    console.error('[db] 建表失败：', err.message);
-    return;
+  const errs = await runStatements(env, SCHEMA_SQL, '建表');
+  if (errs.length) {
+    schemaError = errs.slice(0, 3).join(' ;; ');
+    return; // 建表失败就别继续了，下次请求再试
   }
+  schemaError = null;
 
-  // 可选：没人放点位时灌入示例数据
   if (env.AUTO_SEED === '1' && SEED_SQL) {
     try {
       const markers = await env.DB.prepare('SELECT COUNT(*) AS n FROM markers').first();
-      if (!markers || markers.n === 0) {
-        await env.DB.exec(SEED_SQL);
-        console.log('[db] 已写入示例数据');
-      }
+      if (!markers || markers.n === 0) await runStatements(env, SEED_SQL, '示例数据');
     } catch (err) {
       console.error('[db] 示例数据写入失败：', err.message);
     }
@@ -175,7 +225,7 @@ export default {
     const path = url.pathname;
     const method = request.method;
     const store = createStore(env);
-    await ensureSchema(env, store);
+    await ensureSchema(env);
     const secret = env.SESSION_SECRET || 'dev-secret-change-me';
 
     // 按 ADMIN_EMAIL 提权：用户还没注册时下次请求再试，成功一次就不再查
@@ -466,6 +516,39 @@ ${renderMarkdown(md)}</article></div></body></html>`;
         return new Response(html, { headers: { 'content-type': 'text/html; charset=utf-8' } });
       }
 
+      // ── 自检（不含任何密钥值，只报布尔）──────────────────
+      if (path === '/api/diag') {
+        let tables = [];
+        try {
+          const r = await env.DB.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all();
+          tables = (r.results || []).map((x) => x.name);
+        } catch (err) {
+          tables = [`读取失败: ${err.message}`];
+        }
+        let counts = {};
+        try {
+          const u = await env.DB.prepare('SELECT COUNT(*) AS n FROM users').first();
+          const m = await env.DB.prepare('SELECT COUNT(*) AS n FROM markers').first();
+          counts = { users: u ? u.n : 0, markers: m ? m.n : 0 };
+        } catch (err) {
+          counts = { error: String(err.message || err) };
+        }
+        return json({
+          ok: true,
+          runtime: 'worker',
+          schemaError,
+          tables,
+          counts,
+          hasDB: !!env.DB,
+          hasAssets: !!env.ASSETS,
+          hasTdtTk: !!(env.TDT_TK && env.TDT_TK.length > 8),
+          hasAdminEmail: !!(env.ADMIN_EMAIL && env.ADMIN_EMAIL.includes('@')),
+          hasMailFrom: !!env.MAIL_FROM,
+          hasResend: !!env.RESEND_API_KEY,
+          sessionSecretIsDefault: !env.SESSION_SECRET || env.SESSION_SECRET === 'dev-secret-change-me'
+        });
+      }
+
       // ── 管理后台 ───────────────────────────────────────
       if (path.startsWith('/api/admin/')) {
         if (!viewer) return fail(401, 'unauthorized', '请先登录');
@@ -549,7 +632,10 @@ ${renderMarkdown(md)}</article></div></body></html>`;
       return fail(404, 'not_found', '页面不存在');
     } catch (err) {
       console.error('[worker]', err);
-      return fail(500, 'internal', '服务器出了点问题');
+      return fail(500, 'internal', '服务器出了点问题', {
+        detail: String(err && err.message ? err.message : err),
+        schema: schemaError || undefined
+      });
     }
   }
 };
