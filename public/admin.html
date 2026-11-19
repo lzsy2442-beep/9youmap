@@ -1,0 +1,36 @@
+﻿<!doctype html>
+<html lang="zh-CN" class="admin-html">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#EFE4CC">
+<title>管理台 · 9友地图</title>
+<link rel="stylesheet" href="/css/style.css">
+<link rel="stylesheet" href="/css/admin.css">
+<link rel="icon" href="/icons/icon.svg">
+</head>
+<body class="admin-body">
+
+<header class="admin-top">
+  <span class="admin-brand">9友地图 · 管理台</span>
+  <span class="admin-user" id="admin-user">读取中…</span>
+  <a class="admin-link" href="/">← 回到地图</a>
+</header>
+
+<nav class="admin-tabs" id="admin-tabs">
+  <button data-tab="overview" class="on">概览</button>
+  <button data-tab="notices">公告</button>
+  <button data-tab="users">用户</button>
+  <button data-tab="markers">标记</button>
+  <button data-tab="reports">举报</button>
+</nav>
+
+<main class="admin-main" id="admin-main">
+  <p class="admin-hint">正在读取权限…</p>
+</main>
+
+<div class="admin-toasts" id="admin-toasts"></div>
+
+<script type="module" src="/js/admin.js"></script>
+</body>
+</html>

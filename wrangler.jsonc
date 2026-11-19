@@ -1,0 +1,31 @@
+{
+  // Cloudflare Worker + 静态资源（Pages/Workers Assets）
+  // 部署前把 database_id 换成 `wrangler d1 create jiuyoumap` 给出的值
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "jiuyoumap",
+  "main": "worker/index.js",
+  "compatibility_date": "2025-06-01",
+  "compatibility_flags": ["nodejs_compat"],
+
+  // 静态文件（public/）由 Cloudflare 边缘直接返回，Worker 只处理 /api/* 与 /legal/*
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS"
+  },
+
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "jiuyoumap",
+      "database_id": "REPLACE_WITH_YOUR_D1_ID"
+    }
+  ],
+
+  // 普通变量；密钥用 `wrangler secret put` 单独设置
+  "vars": {
+    "TDT_TK": "",
+    "ADMIN_EMAIL": ""
+  },
+
+  "observability": { "enabled": true }
+}

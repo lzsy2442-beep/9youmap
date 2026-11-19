@@ -1,0 +1,54 @@
+# /etc/systemd/system/jiuyoumap.service
+#
+# 安装：
+#   sudo cp deploy/jiuyoumap.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now jiuyoumap
+# 查看日志：
+#   journalctl -u jiuyoumap -f
+
+[Unit]
+Description=9友地图（9youmap）
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=jiuyoumap
+Group=jiuyoumap
+WorkingDirectory=/opt/jiuyoumap
+
+# 只监听回环，由 Caddy 对外
+Environment=HOST=127.0.0.1
+Environment=PORT=3000
+Environment=NODE_ENV=production
+
+# 密钥请放在 /etc/jiuyoumap.env，权限 600，属主 root
+EnvironmentFile=-/etc/jiuyoumap.env
+
+ExecStart=/usr/bin/node server/index.js
+
+Restart=always
+RestartSec=3
+# 崩溃重启的退避上限
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+# 基本加固
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/jiuyoumap/data /opt/jiuyoumap/backups
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=jiuyoumap
+
+[Install]
+WantedBy=multi-user.target

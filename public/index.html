@@ -1,0 +1,177 @@
+﻿<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light">
+<meta name="theme-color" content="#EFE4CC">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="9友地图">
+<meta name="format-detection" content="telephone=no">
+<link rel="manifest" href="/manifest.webmanifest">`n<link rel="apple-touch-icon" href="/icons/icon-180.png">
+<title>9友地图 · 司辰的伞</title>
+<meta name="description" content="非官方同人项目：在荒原地图上撑起你的伞，找到同服的司辰。">
+<link rel="stylesheet" href="/css/style.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23EFE4CC'/%3E%3Cpath d='M6 16q10-12 20 0-5-3-10 0-5-3-10 0z' fill='%23B08A4F' stroke='%232C2419' stroke-width='1.2'/%3E%3Cpath d='M16 16v8q0 3 3 3' fill='none' stroke='%232C2419' stroke-width='1.4'/%3E%3C/svg%3E">
+</head>
+<body data-weather="clear">
+
+<canvas id="map" aria-label="同好地图"></canvas>
+<div class="paper-grain" aria-hidden="true"></div>
+<div class="weather-layer" id="weather-layer" aria-hidden="true"></div>
+<canvas id="fx" aria-hidden="true"></canvas>
+<div class="vignette" aria-hidden="true"></div>
+
+<!-- 顶部 -->
+<header class="chrome chrome-top">
+  <div class="brand">
+    <span class="brand-name">9友地图</span>
+    <span class="brand-sub">司辰的伞</span>
+  </div>
+  <div class="counter" id="counter" title="全球标记数">
+    <span class="counter-dot"></span>
+    <span id="counter-text">正在清点…</span>
+  </div>
+  <div class="top-actions">
+    <button class="chip" id="btn-weather" type="button" aria-live="polite">
+      <span class="chip-dot" id="weather-dot"></span>
+      <span id="weather-text">天气</span>
+    </button>
+    <button class="chip" id="btn-basemap" type="button" title="切换底图">
+      <span id="basemap-text">纸面</span>
+    </button>
+  </div>
+</header>
+
+<!-- 左：孤屿导航 -->
+<nav class="rail" id="rail" aria-label="功能">
+  <button class="rail-item" data-act="map" type="button" title="回到全国视野"><span class="rail-glyph">◈</span><span>地图</span></button>
+  <button class="rail-item" data-act="radar" type="button"><span class="rail-glyph">◎</span><span>雷达</span></button>
+  <button class="rail-item" data-act="notices" type="button">
+    <span class="rail-glyph">✉</span><span>公告</span>
+    <i class="rail-dot" id="notice-dot" hidden></i>
+  </button>
+  <button class="rail-item" data-act="mine" type="button"><span class="rail-glyph">☂</span><span>我的</span></button>
+  <button class="rail-item" data-act="case" type="button"><span class="rail-glyph">▤</span><span>手提箱</span></button>
+  <button class="rail-item" data-act="legal" type="button"><span class="rail-glyph">§</span><span>条款</span></button>
+</nav>
+
+<!-- 右：附近面板 -->
+<aside class="panel" id="panel" hidden>
+  <div class="panel-head">
+    <h2 id="panel-title">这片地图里的司辰</h2>
+    <button class="icon-btn" id="panel-close" type="button" aria-label="收起">×</button>
+  </div>
+  <div class="panel-filter">
+    <button class="seg on" data-server="all" type="button">全部</button>
+    <button class="seg" data-server="mine" type="button">仅同服</button>
+  </div>
+  <ul class="near-list" id="near-list"></ul>
+  <p class="panel-note" id="panel-note">同服用铜色标记 · 异服加不了游戏好友</p>
+</aside>
+
+<!-- 右：比例尺与缩放 -->
+<div class="zoom" id="zoom" aria-label="地图比例尺" role="group">
+  <button class="zoom-btn" data-zoom="in" type="button" aria-label="放大地图" title="放大">＋</button>
+
+  <button class="zoom-btn" data-zoom="out" type="button" aria-label="缩小地图" title="缩小">－</button>
+  <span class="zoom-sep" aria-hidden="true"></span>
+  <button class="zoom-btn" data-act="settings" type="button" aria-label="设置" title="设置">⚙</button>
+</div>
+
+<!-- 底部 -->
+<div class="dock">
+  <button class="btn btn-primary" id="btn-place" type="button">撑起你的伞</button>
+  <button class="btn btn-ghost" id="btn-login" type="button">登录</button>
+</div>
+
+<footer class="foot">
+  <span>非官方同人项目 · 与深蓝互动无关</span>
+  <span class="foot-links">
+    <a href="/legal/terms" target="_blank" rel="noopener">用户协议</a>
+    <a href="/legal/privacy" target="_blank" rel="noopener">隐私政策</a>
+    <a href="/legal/inventory" target="_blank" rel="noopener">信息清单</a>
+    <a href="/legal/disclaimer" target="_blank" rel="noopener">免责声明</a>
+    <a href="/legal/community" target="_blank" rel="noopener">社区规范</a>
+  </span>
+  <span class="foot-map" id="foot-map">地图：纸面底图（未展示行政边界）</span>
+</footer>
+
+<!-- 通用弹层 -->
+<div class="overlay" id="overlay" hidden>
+  <div class="card" id="card" role="dialog" aria-modal="true" aria-labelledby="card-title">
+    <div class="card-head">
+      <h2 id="card-title">标题</h2>
+      <button class="icon-btn" id="card-close" type="button" aria-label="关闭">×</button>
+    </div>
+    <div class="card-body" id="card-body"></div>
+    <div class="card-foot" id="card-foot"></div>
+  </div>
+</div>
+
+<div class="toasts" id="toasts" aria-live="polite"></div>
+
+<template id="tpl-login">
+  <form id="login-form" class="form" novalidate>
+    <p class="form-hint">用邮箱收一个验证码就能登录，不用记密码。</p>
+    <label class="field">
+      <span>邮箱</span>
+      <input type="email" name="email" autocomplete="email" placeholder="you@example.com" required>
+    </label>
+    <div class="field-row">
+      <label class="field grow">
+        <span>验证码</span>
+        <input type="text" name="code" inputmode="numeric" autocomplete="one-time-code" placeholder="6 位数字" maxlength="6">
+      </label>
+      <button class="btn btn-small" id="btn-send-code" type="button">获取验证码</button>
+    </div>
+    <label class="field">
+      <span>渠道服 <em>决定能不能在游戏里加好友</em></span>
+      <select name="serverKey" id="sel-server" required></select>
+    </label>
+    <div class="field">
+      <span>所在地区 <em>省 → 市 → 区县，只用于界面天气，不会公开</em></span>
+      <div class="region-row" id="login-region">
+        <select data-region="province" aria-label="省级行政区"></select>
+        <select data-region="city" aria-label="地级市"></select>
+        <select data-region="county" aria-label="区县"></select>
+      </div>
+      <input type="hidden" name="cityCode">
+    </div>
+    <label class="field">
+      <span>昵称</span>
+      <input type="text" name="nickname" maxlength="16" placeholder="2–16 个字" required>
+    </label>
+
+    <div class="consent-head">
+      <span>同意以下条款才能登录</span>
+      <button type="button" class="link-btn" id="btn-agree-all">一键同意全部</button>
+    </div>
+    <div class="consent-box">
+      <label class="consent">
+        <input type="checkbox" name="c_terms">
+        <span>我已阅读并同意<a href="/legal/terms" target="_blank" rel="noopener">《用户协议》</a><a href="/legal/privacy" target="_blank" rel="noopener">《隐私政策》</a><a href="/legal/inventory" target="_blank" rel="noopener">《个人信息收集与用途清单》</a><a href="/legal/disclaimer" target="_blank" rel="noopener">《免责声明》</a><a href="/legal/community" target="_blank" rel="noopener">《社区规范》</a></span>
+      </label>
+      <label class="consent">
+        <input type="checkbox" name="c_location">
+        <span>我同意在公开地图上展示我选择的位置<em>默认模糊至约 500 米，可随时关闭</em></span>
+      </label>
+      <label class="consent">
+        <input type="checkbox" name="c_uid">
+        <span>我同意向同服用户展示我的游戏 UID<em>可选，随时可关</em></span>
+      </label>
+      <label class="consent">
+        <input type="checkbox" name="c_age">
+        <span>我确认我已年满 14 周岁</span>
+      </label>
+    </div>
+    <p class="form-fine">我们不会索要你的游戏账号密码，也不会在后台读取你的定位。</p>
+    <button class="btn btn-primary btn-block" type="submit" id="btn-do-login" disabled>登录 / 注册</button>
+    <p class="dev-hint" id="dev-hint" hidden></p>
+  </form>
+</template>
+
+<script type="module" src="/js/app.js"></script>
+</body>
+</html>

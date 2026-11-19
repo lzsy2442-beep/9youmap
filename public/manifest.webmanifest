@@ -1,0 +1,17 @@
+{
+  "name": "9友地图 · 司辰的伞",
+  "short_name": "9友地图",
+  "description": "非官方同人项目：在荒原地图上撑起你的伞，找到同服的司辰。",
+  "lang": "zh-CN",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#EFE4CC",
+  "theme_color": "#EFE4CC",
+  "icons": [
+    { "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "/icons/icon.svg", "sizes": "any", "type": "image/svg+xml" }
+  ]
+}

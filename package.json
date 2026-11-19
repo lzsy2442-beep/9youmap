@@ -1,0 +1,21 @@
+﻿{
+  "name": "9youmap",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "9友地图 —— 重返未来：1999 同好地图（非官方同人项目）",
+  "engines": { "node": ">=22.5" },
+  "devDependencies": { "wrangler": "^4.0.0" },
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "node --watch server/index.js",
+    "reset": "node scripts/reset.js",
+    "backup": "node scripts/backup.mjs backups",
+    "worker:dev": "node scripts/worker-dev.mjs 3001",
+    "worker:assets": "node scripts/build-worker-assets.mjs",
+    "deploy:cf": "node scripts/build-worker-assets.mjs && wrangler deploy",
+    "d1:schema": "wrangler d1 execute jiuyoumap --remote --file=worker/schema.sql",
+    "admin": "node scripts/admin.mjs",
+    "test": "node scripts/gesture-smoke.mjs && node scripts/fx-smoke.mjs && node scripts/mail-smoke.mjs && node scripts/map-check.mjs"
+  }
+}

@@ -1,0 +1,37 @@
+# 9友地图 · Caddy 配置
+# 把 your-domain.com 换成你的域名。Caddy 会自动申请并续期 Let's Encrypt 证书。
+
+your-domain.com {
+	encode zstd gzip
+
+	# 反向代理到本机的 Node 服务（只监听 127.0.0.1，不对外暴露）
+	reverse_proxy 127.0.0.1:3000 {
+		# SSE 需要关闭缓冲，否则 /api/stream 会卡住
+		flush_interval -1
+	}
+
+	# 安全响应头（应用里也设了一份，这里兜底）
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+
+	# 备份目录、数据目录绝不对外
+	@blocked path /data/* /backups/* /server/* /scripts/* /.git/*
+	respond @blocked 404
+
+	log {
+		output file /var/log/caddy/jiuyoumap.log {
+			roll_size 20mb
+			roll_keep 10
+		}
+		format json
+	}
+}
+
+# 不带 www 到带 www 的跳转（按需保留）
+# www.your-domain.com {
+# 	redir https://your-domain.com{uri} permanent
+# }
