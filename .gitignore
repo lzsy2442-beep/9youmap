@@ -1,0 +1,22 @@
+﻿# 依赖
+node_modules/
+
+# 本地数据与密钥
+data/
+!.gitignore
+
+# 截图与临时文件
+docs/shots/
+*.log
+*.tmp
+
+# 编辑器
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+out/
+
+# 构建脚本的下载缓存
+scripts/.cache/
