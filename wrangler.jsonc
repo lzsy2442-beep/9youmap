@@ -17,14 +17,14 @@
     {
       "binding": "DB",
       "database_name": "jiuyoumap",
-      "database_id": "REPLACE_WITH_YOUR_D1_ID"
+      "database_id": "72f0345f-731a-493a-9baf-0cfc7b0819ca"
     }
   ],
 
   // 普通变量；密钥用 `wrangler secret put` 单独设置
   "vars": {
-    "TDT_TK": "",
-    "ADMIN_EMAIL": ""
+    "TDT_TK": "fe66986378af3f8ecbe276808919c8b9",
+    "ADMIN_EMAIL": "suyu060416@foxmail.com"
   },
 
   "observability": { "enabled": true }
