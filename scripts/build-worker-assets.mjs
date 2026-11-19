@@ -1,7 +1,7 @@
-// 把「运行时读文件」的东西打包成 JS 模块，供 Cloudflare Worker 直接 import
+﻿// 把「运行时读文件」的东西打包成 JS 模块，供 Cloudflare Worker 直接 import
 // 用法：node scripts/build-worker-assets.mjs
 // 产出：worker/data-regions.js、worker/data-legal.js
-import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
@@ -42,4 +42,16 @@ export const LEGAL_HASHES = ${JSON.stringify(hashes)};
 `;
 writeFileSync(join(OUT, 'data-legal.js'), legalJs, 'utf8');
 console.log(`data-legal.js    ${(legalJs.length / 1024).toFixed(0)} KB`);
-console.log('完成：改过法律文本或行政区划后，需要重新跑一次这个脚本再部署。');
+
+// ── 建表与示例数据（让 Worker 首次请求自动初始化，省掉手工粘 SQL）──
+const schemaSql = readFileSync(join(ROOT, 'worker', 'schema.sql'), 'utf8');
+const seedPath = join(ROOT, 'worker', 'seed.sql');
+const seedSql = existsSync(seedPath) ? readFileSync(seedPath, 'utf8') : '';
+const dbJs = `// 由 scripts/build-worker-assets.mjs 生成，请勿手改
+export const SCHEMA_SQL = ${JSON.stringify(schemaSql)};
+export const SEED_SQL = ${JSON.stringify(seedSql)};
+`;
+writeFileSync(join(OUT, 'data-schema.js'), dbJs, 'utf8');
+console.log(`data-schema.js   ${(dbJs.length / 1024).toFixed(0)} KB`);
+
+console.log('完成：改过法律文本、行政区划或数据库结构后，需要重新跑一次这个脚本再部署。');

@@ -69,8 +69,11 @@ const ASSETS = {
 };
 
 // ── 载入 schema ────────────────────────────────────────────
-const schema = await readFile(join(ROOT, 'worker', 'schema.sql'), 'utf8');
-sqlite.exec(schema);
+// 默认空库，让 Worker 自己的 ensureSchema 去建表（模拟真实首次部署）
+if (process.env.SKIP_SCHEMA !== '1') {
+  const schema = await readFile(join(ROOT, 'worker', 'schema.sql'), 'utf8');
+  sqlite.exec(schema);
+}
 
 const env = {
   DB,
@@ -78,6 +81,7 @@ const env = {
   SESSION_SECRET: 'local-test-secret',
   ALLOW_DEV_CODE: '1',       // 本地测试才允许把验证码返回给前端
   ADMIN_EMAIL: 'admin@9you.test',
+  AUTO_SEED: process.env.AUTO_SEED || '0',
   TDT_TK: ''
 };
 

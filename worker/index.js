@@ -7,6 +7,7 @@ import {
 import { renderMarkdown } from '../server/md.js';
 import { PROVINCES, CITY_POINTS, REGION_STATS, getRegion, regionLabel, isInChina } from './regions.js';
 import { LEGAL_TEXT, LEGAL_HASHES } from './data-legal.js';
+import { SCHEMA_SQL, SEED_SQL } from './data-schema.js';
 import { createStore } from './db.js';
 import { issueSession, readSession, clearCookie, hashCode, newCode } from './session.js';
 
@@ -17,6 +18,39 @@ const json = (data, status = 200, headers = {}) => new Response(JSON.stringify(d
 const fail = (status, code, message, extra = {}) => json({ ok: false, error: { code, message, ...extra } }, status);
 const clientIp = (req) => req.headers.get('cf-connecting-ip') || req.headers.get('x-forwarded-for') || '0.0.0.0';
 
+// ── 自动初始化：首次请求时建表（省掉手工粘 SQL）──────────────
+let schemaReady = false;
+async function ensureSchema(env, store) {
+  if (schemaReady) return;
+  try {
+    // 表已存在就什么都不做
+    await env.DB.prepare('SELECT 1 FROM users LIMIT 1').first();
+    schemaReady = true;
+    return;
+  } catch { /* 表不存在，继续建 */ }
+
+  try {
+    await env.DB.exec(SCHEMA_SQL);
+    console.log('[db] 已自动建表');
+  } catch (err) {
+    console.error('[db] 建表失败：', err.message);
+    return;
+  }
+
+  // 可选：没人放点位时灌入示例数据
+  if (env.AUTO_SEED === '1' && SEED_SQL) {
+    try {
+      const markers = await env.DB.prepare('SELECT COUNT(*) AS n FROM markers').first();
+      if (!markers || markers.n === 0) {
+        await env.DB.exec(SEED_SQL);
+        console.log('[db] 已写入示例数据');
+      }
+    } catch (err) {
+      console.error('[db] 示例数据写入失败：', err.message);
+    }
+  }
+  schemaReady = true;
+}
 // 简易限流：每个 isolate 内存里，够用且不会跨实例一致（文档里说明了）
 const buckets = new Map();
 function rateLimit(req, key, max, windowMs) {
@@ -141,6 +175,7 @@ export default {
     const path = url.pathname;
     const method = request.method;
     const store = createStore(env);
+    await ensureSchema(env, store);
     const secret = env.SESSION_SECRET || 'dev-secret-change-me';
 
     // 按 ADMIN_EMAIL 提权：用户还没注册时下次请求再试，成功一次就不再查
