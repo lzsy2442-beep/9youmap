@@ -644,8 +644,9 @@ async function openLogin() {
       const checks = ['c_terms', 'c_age'].map((n) => form.elements[n]);
       // 资料区没展开时（老用户），只要有验证码就能提交
       const syncBtn = () => {
-        const code = form.elements.code.value.trim();
-        btnSubmit.disabled = profile.hidden ? code.length < 4 : !checks.every((c) => c.checked);
+        // 只按验证码长度禁用；同意条款交给提交时校验，
+        // 否则按钮是灰的、条款又在卡片下方，用户会以为「点了没反应」。
+        btnSubmit.disabled = form.elements.code.value.trim().length < 4;
       };
       checks.forEach((c) => (c.onchange = syncBtn));
       form.elements.code.oninput = syncBtn;
@@ -710,8 +711,20 @@ async function openLogin() {
         if (!payload.code) return toast('请填写验证码');
         // 只在「首次登录」的表单展开后，才校验资料与同意项
         if (!profile.hidden) {
-          if (!payload.consents.terms) return toast('请先同意条款', 'warn');
-          if (!payload.consents.age14) return toast('请先确认年龄', 'warn');
+          const box = form.querySelector('.consent-box');
+          const head = form.querySelector('.consent-head');
+          const flash = () => {
+            if (head) head.scrollIntoView({ block: 'center', behavior: 'smooth' });
+            if (box) {
+              box.classList.remove('flash');
+              void box.offsetWidth;      // 重排以重启动画
+              box.classList.add('flash');
+            }
+          };
+          if (!payload.consents.terms || !payload.consents.age14) {
+            flash();
+            return toast('请勾选下方的同意条款', 'warn');
+          }
           if (!payload.cityCode) return toast('请选择所在地区', 'warn');
         }
         try {
@@ -731,8 +744,7 @@ async function openLogin() {
             profile.hidden = false;
             body.querySelector('#login-profile-note').textContent =
               '这是您第一次登录，还需要补完下面几项；以后登录只凭邮箱和验证码。';
-            form.elements.nickname.focus();
-            profile.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+            profile.scrollIntoView({ block: 'start', behavior: 'smooth' });
             syncBtn();
             toast('首次登录，请补完下面的资料', 'warn');
             return;

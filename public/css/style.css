@@ -1162,3 +1162,11 @@ body.no-grain .paper-grain { display: none; }
 }
 .guide-steps li { margin-bottom: 8px; }
 .guide-steps b { color: var(--ink); }
+
+/* 提交时缺同意项：让条款框闪一下，指明要勾哪里 */
+@keyframes consentFlash {
+  0%, 100% { background: transparent; box-shadow: none; }
+  25% { background: rgba(140, 59, 43, 0.1); box-shadow: 0 0 0 2px rgba(140, 59, 43, 0.35); }
+  60% { background: rgba(140, 59, 43, 0.06); box-shadow: 0 0 0 2px rgba(140, 59, 43, 0.2); }
+}
+.consent-box.flash { animation: consentFlash 0.9s ease 2; border-radius: 3px; }
