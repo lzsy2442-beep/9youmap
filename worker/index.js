@@ -370,6 +370,16 @@ export default {
         }
         const code = newCode();
         await store.setCode(email, await hashCode(secret, email, code), LIMITS.codeTtlSec);
+
+        // 临时测试白名单：域名未就绪时，对指定邮箱跳过真实发信，直接返回验证码。
+        // 用环境变量 TEST_EMAILS 控制（逗号分隔），不设置就等于关闭。
+        const testList = String(env.TEST_EMAILS || '')
+          .split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
+        if (testList.includes(email)) {
+          console.log(`[mail:test] ${email} 命中测试白名单，未发送邮件`);
+          return json({ ok: true, delivered: false, devCode: code, ttl: LIMITS.codeTtlSec, testMode: true });
+        }
+
         let sent;
         try {
           sent = await sendMail(env, email, code);
