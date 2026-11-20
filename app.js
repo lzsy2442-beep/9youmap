@@ -1,0 +1,1161 @@
+﻿import { PaperMap } from './map.js';
+import { createWeatherFx } from './fx.js';
+
+const $ = (sel) => document.querySelector(sel);
+const isNarrow = () => window.innerWidth <= 720;
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+const S = {
+  site: null,
+  servers: [],
+  cities: [],
+  me: null,
+  consent: null,
+  stats: null,
+  markers: [],
+  seq: 0,
+  weather: null,
+  weatherMock: '',
+  cityCode: '110000',
+  serverFilter: 'all',
+  map: null,
+  fx: null,
+  selectedId: null
+};
+
+// ── API ─────────────────────────────────────────────────────
+async function api(path, { method = 'GET', body } = {}) {
+  const res = await fetch(path, {
+    method,
+    headers: body ? { 'content-type': 'application/json' } : undefined,
+    body: body ? JSON.stringify(body) : undefined,
+    credentials: 'same-origin'
+  });
+  let data = null;
+  try { data = await res.json(); } catch { /* 可能是 HTML */ }
+  if (!res.ok || (data && data.ok === false)) {
+    const err = data?.error || {};
+    const e = new Error(err.message || `请求失败（${res.status}）`);
+    e.code = err.code;
+    e.status = res.status;
+    e.detail = err;
+    throw e;
+  }
+  return data;
+}
+
+// ── Toast ───────────────────────────────────────────────────
+function toast(msg, kind = '') {
+  const el = document.createElement('div');
+  el.className = `toast ${kind}`;
+  el.textContent = msg;
+  $('#toasts').appendChild(el);
+  setTimeout(() => {
+    el.style.transition = 'opacity .3s, transform .3s';
+    el.style.opacity = '0';
+    el.style.transform = 'translateY(-6px)';
+    setTimeout(() => el.remove(), 320);
+  }, 2600);
+}
+
+// ── 弹层 ───────────────────────────────────────────────────
+let cardCleanup = null;
+function openCard({ title, body, foot = '', onMount, wide = false }) {
+  $('#card-title').textContent = title;
+  const card = $('#card');
+  card.style.width = wide ? 'min(560px, 100%)' : '';
+  $('#card-body').innerHTML = '';
+  if (typeof body === 'string') $('#card-body').innerHTML = body;
+  else if (body) $('#card-body').appendChild(body);
+  $('#card-foot').innerHTML = foot;
+  $('#overlay').hidden = false;
+  if (typeof onMount === 'function') cardCleanup = onMount($('#card-body'), $('#card-foot')) || null;
+}
+function closeCard() {
+  $('#overlay').hidden = true;
+  if (typeof cardCleanup === 'function') { try { cardCleanup(); } catch { /* noop */ } }
+  cardCleanup = null;
+}
+$('#card-close').addEventListener('click', closeCard);
+$('#overlay').addEventListener('click', (e) => { if (e.target.id === 'overlay') closeCard(); });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeCard(); });
+
+// ── 启动 ───────────────────────────────────────────────────
+async function boot() {
+  let boot;
+  try {
+    boot = await api('/api/bootstrap');
+  } catch (err) {
+    $('#counter-text').textContent = '连不上服务器，地图先只显示底图';
+    return;
+  }
+  S.site = boot.site;
+  S.servers = boot.servers;
+  S.cities = boot.cities;
+  S.stats = boot.stats;
+  S.me = boot.me;
+  S.consent = boot.me?.consent || null;
+  S.cityCode = S.me?.cityCode || '110000';
+
+  S.settings = loadSettings();
+  initMap();
+  applySettings();
+  refreshNoticeDot();
+  renderCounter();
+  renderAuthState();
+  await loadFeed();
+  updateWeatherChip();
+  loadWeather(S.cityCode);
+
+  connectStream();
+
+  if (!S.me) {
+    setTimeout(() => toast('拖动地图看看 · 登录后就能把伞放在这里'), 900);
+  }
+}
+
+function initMap() {
+  const tk = S.site?.tdtTk || '';
+  const map = new PaperMap($('#map'), {
+    cities: S.cities,
+    center: { lat: 34.2, lng: 108.9 },
+    zoom: isNarrow() ? 3.5 : 4.6,
+    tileUrl: tk ? (z, x, y, layer) => {
+      const host = `t${(x + y) % 8}`;
+      return `https://${host}.tianditu.gov.cn/${layer}_w/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0`
+        + `&LAYER=${layer}&STYLE=default&TILEMATRIXSET=w&FORMAT=tiles`
+        + `&TILEMATRIX=${z}&TILEROW=${y}&TILECOL=${x}&tk=${encodeURIComponent(tk)}`;
+    } : null,
+    onClick: onMapClick,
+    onMarkerClick: (m) => openMarkerCard(m),
+    onViewChange: handleViewChange
+  });
+  S.map = map;
+  S.fx = createWeatherFx($('#fx'));
+  $('#basemap-text').textContent = tk ? '天地图' : '纸面';
+  $('#foot-map').textContent = tk
+    ? '底图数据 © 天地图（国家地理信息公共服务平台）'
+    : '地图：纸面底图（未配置天地图 Key，不展示任何行政边界）';
+  // 只有真正用天地图时才需要展示审图号
+  const attrib = $('#foot-attrib');
+  if (attrib) attrib.hidden = !tk;
+  if (tk) $('#btn-basemap').title = '天地图底图已启用';
+}
+
+// ── 比例尺 / 视图变化 ──────────────────────────────────────
+let lastCenter = null;
+
+function handleViewChange(view) {
+  // 地图中心被拖动 → 立刻收起雷达，免得挡着看
+  if (lastCenter) {
+    const moved = Math.abs(view.center.lat - lastCenter.lat) > 1e-7
+      || Math.abs(view.center.lng - lastCenter.lng) > 1e-7;
+    if (moved && !$('#panel').hidden) showPanel(false);
+  }
+  lastCenter = { lat: view.center.lat, lng: view.center.lng };
+}
+// ── 计数与登录态 ────────────────────────────────────────────
+function renderCounter() {
+  const st = S.stats;
+  if (!st) return;
+  const total = st.total || 0;
+  const players = st.players || 0;
+  $('#counter-text').textContent = total === 0
+    ? (isNarrow() ? '还没人撑伞' : '还没有人撑伞 · 你来当第一个')
+    : (isNarrow()
+      ? `${total} 处 · ${players} 位`
+      : `全球 ${total} 处标记 · ${players} 位司辰${S.me ? '' : ' · 登录后能看到 TA 们'}`);
+}
+
+function renderAuthState() {
+  const logged = !!S.me;
+  $('#btn-login').textContent = logged ? '我的' : '登录';
+  $('#btn-login').dataset.logged = logged ? '1' : '0';
+  $('#btn-place').textContent = logged
+    ? (S.consent?.state?.location ? '在地图上撑伞' : '开启位置展示')
+    : '撑起你的伞';
+}
+
+// ── 地图数据 ────────────────────────────────────────────────
+async function loadFeed() {
+  try {
+    const data = await api(`/api/map/feed?since=${S.seq}`);
+    if (data.markers.length) {
+      const map = new Map(S.markers.map((m) => [m.id, m]));
+      for (const m of data.markers) map.set(m.id, m);
+      S.markers = [...map.values()];
+      S.seq = data.seq || S.seq;
+      S.map.setMarkers(S.markers);
+    }
+    S.stats = await api('/api/stats').then((d) => d.stats);
+    renderCounter();
+  } catch { /* 静默 */ }
+}
+
+// 删除 / 撤权 / 换账号后需要整表重拉（since 增量拿不到「消失」）
+async function reloadAll() {
+  S.seq = 0;
+  S.markers = [];
+  S.map.setMarkers([]);
+  await loadFeed();
+}
+
+function connectStream() {
+  try {
+    const es = new EventSource('/api/stream');
+    es.onmessage = (ev) => {
+      try {
+        const d = JSON.parse(ev.data);
+        if (d.type === 'feed') loadFeed();
+      } catch { /* noop */ }
+    };
+    es.onerror = () => { /* 浏览器会自动重连 */ };
+  } catch { /* 不支持就算了 */ }
+}
+
+// ── 天气 ───────────────────────────────────────────────────
+function updateWeatherChip() {
+  const w = S.weather;
+  const narrow = isNarrow();
+  const label = w?.regionLabel || w?.cityName || '';
+
+  if (!w || !w.ok) {
+    $('#weather-text').textContent = narrow ? '天气不可用' : `${label || '天气'} · 不可用`;
+    $('#weather-dot').style.background = 'var(--fog)';
+    document.body.dataset.weather = 'clear';
+    delete document.body.dataset.night;
+    S.fx?.set('off');
+    return;
+  }
+
+  // 手机上只留「晴 2°」，把城市名省出来给计数器
+  $('#weather-text').textContent = (narrow || !label)
+    ? `${w.text} ${w.temp}°`
+    : `${label} · ${w.text} ${w.temp}°`;
+
+  const colors = { clear: '#D8B77A', cloudy: '#C9C2AE', fog: '#C9C2AE', drizzle: '#8FA9C4', rain: '#7FA8C9', storm: '#8C3B2B', snow: '#DCE6EA' };
+  $('#weather-dot').style.background = colors[w.kind] || 'var(--brass)';
+  document.body.dataset.weather = w.kind || 'clear';
+  document.body.dataset.night = w.isDay ? '0' : '1';
+  S.fx?.set(w.kind || 'off');
+}
+async function loadWeather(cityCode, mock = '') {
+  try {
+    const q = new URLSearchParams({ cityCode });
+    if (mock) q.set('mock', mock);
+    S.weather = await api(`/api/weather?${q}`);
+  } catch (err) {
+    S.weather = { ok: false, error: err.message };
+  }
+  updateWeatherChip();
+  maybeStormEgg();
+}
+
+// 暴雨彩蛋：城市真在下暴雨时，出司辰语气的一句话
+let stormEggShown = false;
+function maybeStormEgg() {
+  if (stormEggShown) return;
+  if (S.weather?.ok && S.weather.kind === 'storm') {
+    stormEggShown = true;
+    setTimeout(() => {
+      openCard({
+        title: '暴雨预警',
+        body: `<p class="profile-bio">这场雨，是从哪一年下过来的？</p>
+          <p class="tip">你所在的城市正在下暴雨。地图上的金兔子会短暂消失——它们比我们更怕雨。</p>`,
+        foot: `<button class="btn btn-primary" data-close>我知道了</button>`,
+        onMount: (body, foot) => {
+          foot.querySelector('[data-close]').onclick = closeCard;
+        }
+      });
+    }, 900);
+  }
+}
+
+// ── 附近 / 雷达 ─────────────────────────────────────────────
+async function loadNear() {
+  const v = S.map.getView();
+  try {
+    const data = await api(`/api/map/around?lat=${v.center.lat}&lng=${v.center.lng}&server=${S.serverFilter}`);
+    renderNear(data.near);
+  } catch (err) {
+    $('#near-list').innerHTML = `<li class="near-item"><span class="near-sub">${esc(err.message)}</span></li>`;
+  }
+}
+
+function renderNear(list) {
+  const ul = $('#near-list');
+  if (!list.length) {
+    ul.innerHTML = `<li class="near-item"><span class="near-sub">这片地图暂时没人，把地图拖到城市附近再看看。</span></li>`;
+    return;
+  }
+  ul.innerHTML = list.map((m) => {
+    const same = m.sameServer;
+    const dist = m.distance < 1000 ? `${m.distance} m` : `${(m.distance / 1000).toFixed(1)} km`;
+    return `<li class="near-item" data-id="${esc(m.id)}">
+      <span class="near-avatar ${same ? 'same' : ''}">${esc((m.nickname || '?').slice(0, 1))}</span>
+      <span class="near-main">
+        <span class="near-name">${esc(m.nickname)}
+          <span class="badge-server ${same ? '' : 'other'}" style="${same ? `color:${esc(m.serverColor)}` : ''}">${esc(m.serverShort)}</span>
+        </span>
+        <span class="near-sub">${m.kind === 'rabbit' ? '金兔子' : '伞'}${m.favChar ? ' · ' + esc(m.favChar) : ''}${m.label ? ' · ' + esc(m.label) : ''}</span>
+      </span>
+      <span class="near-dist">${dist}</span>
+    </li>`;
+  }).join('');
+  ul.querySelectorAll('.near-item[data-id]').forEach((li) => {
+    li.onclick = () => {
+      const m = S.markers.find((x) => x.id === li.dataset.id) || list.find((x) => x.id === li.dataset.id);
+      if (!m) return;
+      S.map.flyTo(m.lat, m.lng, Math.max(S.map.zoom, 7));
+      S.map.setSelected(m.id);
+      openMarkerCard(m);
+    };
+  });
+}
+
+function showPanel(open, title) {
+  const panel = $('#panel');
+  panel.hidden = !open;
+  document.body.classList.toggle('panel-open', open);
+  if (open && title) $('#panel-title').textContent = title;
+  if (open) loadNear();
+}
+
+function openPanel(title) { showPanel(true, title); }
+$('#panel-close').onclick = () => showPanel(false);
+document.querySelectorAll('.seg').forEach((b) => {
+  b.onclick = () => {
+    document.querySelectorAll('.seg').forEach((x) => x.classList.toggle('on', x === b));
+    S.serverFilter = b.dataset.server;
+    loadNear();
+  };
+});
+
+// ── 落点 ───────────────────────────────────────────────────
+function onMapClick(lat, lng) {
+  if (!S.me) {
+    toast('登录后就能把伞放在这里');
+    openLogin();
+    return;
+  }
+  if (!S.consent?.state?.location) {
+    openLocationConsent(lat, lng);
+    return;
+  }
+  openPlaceCard(lat, lng);
+}
+
+function openPlaceCard(lat, lng) {
+  const hasMain = S.markers.some((m) => m.isMine && m.kind === 'umbrella');
+  openCard({
+    title: '在这里落点',
+    body: `
+      <div class="field-row">
+        <button class="btn ${hasMain ? 'btn-ghost' : 'btn-primary'}" data-kind="umbrella" type="button">☂ 撑一把伞</button>
+        <button class="btn ${hasMain ? 'btn-primary' : 'btn-ghost'}" data-kind="rabbit" type="button">金兔子</button>
+      </div>
+      <label class="field" style="margin-top:12px">
+        <span>地点备注 <em>可选，最多 20 字</em></span>
+        <input type="text" id="place-label" maxlength="20" placeholder="例如：某个商圈、某所大学">
+      </label>
+      <p class="tip">坐标会被模糊到约 500 米再展示。请不要把标记放在住所、宿舍或工作单位。<br>
+      位置：${lat.toFixed(4)}, ${lng.toFixed(4)}</p>`,
+    foot: `<button class="btn btn-ghost" data-cancel>算了</button><button class="btn btn-primary" data-ok>落点</button>`,
+    onMount: (body, foot) => {
+      let kind = hasMain ? 'rabbit' : 'umbrella';
+      body.querySelectorAll('[data-kind]').forEach((b) => {
+        b.onclick = () => {
+          kind = b.dataset.kind;
+          body.querySelectorAll('[data-kind]').forEach((x) => {
+            x.className = `btn ${x.dataset.kind === kind ? 'btn-primary' : 'btn-ghost'}`;
+          });
+        };
+      });
+      foot.querySelector('[data-cancel]').onclick = closeCard;
+      foot.querySelector('[data-ok]').onclick = async () => {
+        try {
+          const label = body.querySelector('#place-label').value.trim();
+          await api('/api/map/place', { method: 'POST', body: { lat, lng, kind, label } });
+          closeCard();
+          toast(kind === 'rabbit' ? '金兔子放好了，等别的司辰发现它' : '伞撑好了', 'ok');
+          await loadFeed();
+          S.map.flyTo(lat, lng, Math.max(S.map.zoom, 8));
+        } catch (err) {
+          toast(err.message, 'warn');
+          if (err.code === 'RECONSENT_REQUIRED') openLocationConsent(lat, lng);
+        }
+      };
+    }
+  });
+}
+
+function openLocationConsent(lat, lng) {
+  const doc = S.site?.legal?.docs?.find((d) => d.type === 'privacy');
+  openCard({
+    title: '还需要你单独同意一件事',
+    body: `
+      <p class="profile-bio">位置属于**敏感个人信息**，按《个人信息保护法》第二十九条需要你单独同意。</p>
+      <div class="consent-box">
+        <label class="consent">
+          <input type="checkbox" id="c-loc">
+          <span>我同意在公开地图上展示我选择的位置<em>坐标会模糊到约 500 米；可随时在「手提箱 → 隐私」里关闭</em></span>
+        </label>
+      </div>
+      <p class="tip">不开启也能用：看地图、看天气、轻敲别人。只是不能落点。</p>
+      <p class="form-fine">当前隐私政策版本 ${esc(doc?.hash || '')}</p>`,
+    foot: `<button class="btn btn-ghost" data-cancel>先不</button><button class="btn btn-primary" data-ok disabled>同意并继续</button>`,
+    onMount: (body, foot) => {
+      const cb = body.querySelector('#c-loc');
+      const ok = foot.querySelector('[data-ok]');
+      cb.onchange = () => { ok.disabled = !cb.checked; };
+      foot.querySelector('[data-cancel]').onclick = closeCard;
+      ok.onclick = async () => {
+        try {
+          const r = await api('/api/consents', { method: 'POST', body: { type: 'location', action: 'agree' } });
+          S.consent = r.consent;
+          renderAuthState();
+          closeCard();
+          toast('好了，可以落点了', 'ok');
+          openPlaceCard(lat, lng);
+        } catch (err) { toast(err.message, 'warn'); }
+      };
+    }
+  });
+}
+
+// ── 名片 / 互动 ─────────────────────────────────────────────
+function openMarkerCard(m) {
+  const same = m.sameServer;
+  const mine = m.isMine;
+  const uidLine = m.uid && same
+    ? `<dt>游戏 UID</dt><dd>${esc(m.uid)} <a href="#" id="copy-uid" class="foot-links">复制</a></dd>`
+    : `<dt>游戏 UID</dt><dd>${same ? '对方没有公开' : '不在同一渠道服，看不到'}</dd>`;
+
+  openCard({
+    title: mine ? '这是你的标记' : '遇到一位司辰',
+    body: `
+      <div class="profile-top">
+        <div class="profile-avatar">${esc((m.nickname || '?').slice(0, 1))}</div>
+        <div>
+          <div class="profile-name">${esc(m.nickname)}
+            <span class="badge-server" style="color:${esc(m.serverColor)}">${esc(m.serverName)}</span>
+          </div>
+          <div class="profile-meta">
+            <span>${m.kind === 'rabbit' ? '金兔子' : '一把伞'}</span>
+            ${m.favChar ? `<span>本命 · ${esc(m.favChar)}</span>` : ''}
+            ${m.label ? `<span>${esc(m.label)}</span>` : ''}
+          </div>
+        </div>
+      </div>
+      <dl class="kv">
+        <dt>坐标</dt><dd>${m.lat.toFixed(3)}, ${m.lng.toFixed(3)}<span class="near-sub">（约 500 米精度）</span></dd>
+        ${uidLine}
+      </dl>
+      ${same ? '' : `<p class="tip">你们在不同的渠道服（TA 在${esc(m.serverName)}）。可以轻敲打招呼，但**游戏里加不了好友**，悬着递伞按钮就是这个原因。</p>`}
+      <p class="tip">只显示模糊后的坐标。请不要根据点位去推测他人的住址。</p>`,
+    foot: mine
+      ? `<button class="btn btn-danger" data-del>收回</button>`
+      : `<button class="btn btn-ghost" data-knock>轻敲伞沿</button>
+         <button class="btn btn-primary" data-give ${same ? '' : 'disabled title="不同渠道服无法加游戏好友"'}>递伞</button>
+         <button class="btn btn-ghost" data-report>举报</button>`,
+    onMount: (body, foot) => {
+      const copyBtn = body.querySelector('#copy-uid');
+      if (copyBtn) copyBtn.onclick = (e) => { e.preventDefault(); navigator.clipboard?.writeText(m.uid); toast('复制好了', 'ok'); };
+      if (mine) {
+        foot.querySelector('[data-del]').onclick = async () => {
+          try {
+            await api(`/api/map/${m.id}`, { method: 'DELETE' });
+            closeCard(); toast('收回了'); reloadAll();
+          } catch (err) { toast(err.message, 'warn'); }
+        };
+      } else {
+        foot.querySelector('[data-knock]').onclick = () => doTouch(m, 'knock');
+        const give = foot.querySelector('[data-give]');
+        if (give && !same) give.onclick = () => toast('你们不在一个服务器，游戏里加不了好友', 'warn');
+        else if (give) give.onclick = () => doTouch(m, 'give');
+        foot.querySelector('[data-report]').onclick = () => openReport(m);
+      }
+    }
+  });
+}
+
+async function doTouch(m, kind) {
+  try {
+    const r = await api('/api/touch', { method: 'POST', body: { markerId: m.id, kind } });
+    if (r.friend) toast('你们互相递了伞，成了同伞之交', 'ok');
+    else if (kind === 'give') toast('伞递过去了，等 TA 也递回来', 'ok');
+    else toast('轻轻碰了一下，TA 只知道伞动了一下');
+  } catch (err) { toast(err.message, 'warn'); }
+}
+
+function openReport(m) {
+  openCard({
+    title: '举报',
+    body: `<p class="profile-bio">举报内容会直接进入人工审核。恶意举报会被反向处理。</p>
+      <label class="field"><span>原因</span>
+        <select id="report-reason">
+          <option>发布了他人隐私 / 开盒</option>
+          <option>广告或诈骗</option>
+          <option>辱骂或引战</option>
+          <option>位置可疑（疑似住址）</option>
+          <option>其他</option>
+        </select></label>`,
+    foot: `<button class="btn btn-ghost" data-cancel>算了</button><button class="btn btn-danger" data-ok>提交</button>`,
+    onMount: (body, foot) => {
+      foot.querySelector('[data-cancel]').onclick = closeCard;
+      foot.querySelector('[data-ok]').onclick = async () => {
+        await api('/api/report', { method: 'POST', body: { targetType: 'marker', targetId: m.id, reason: body.querySelector('#report-reason').value } });
+        closeCard();
+        toast('举报收到了，站长会尽快处理', 'ok');
+      };
+    }
+  });
+}
+
+// ── 三级行政区划 ───────────────────────────────────────────
+async function getRegionTree() {
+  if (S.regionTree) return S.regionTree;
+  const r = await api('/api/regions');
+  S.regionTree = r.provinces;
+  return S.regionTree;
+}
+
+/** 从 code 反查 [省, 市, 区县] */
+function regionPath(tree, code) {
+  if (!code) return [];
+  for (const p of tree) {
+    if (p.code === code) return [p];
+    for (const c of p.children || []) {
+      if (c.code === code) return [p, c];
+      for (const d of c.children || []) {
+        if (d.code === code) return [p, c, d];
+      }
+    }
+  }
+  return [];
+}
+
+/**
+ * 在 root 里挂载「省 / 市 / 区县」三级联动，结果写进同名 field 下的 input[name=cityCode]
+ * 直辖市与特别行政区只有两级：省 → 区
+ */
+function mountRegionPicker(root, tree, initialCode) {
+  if (!root) return;
+  const selP = root.querySelector('[data-region="province"]');
+  const selC = root.querySelector('[data-region="city"]');
+  const selD = root.querySelector('[data-region="county"]');
+  const hidden = root.parentElement.querySelector('input[name="cityCode"]')
+    || document.querySelector('input[name="cityCode"]');
+
+  // 直辖市 / 特别行政区没有地级市，第二级直接是区
+  const MUNI = new Set(['110000', '120000', '310000', '500000', '810000', '820000']);
+
+  const fill = (sel, items, placeholder) => {
+    sel.innerHTML = `<option value="">${placeholder}</option>` +
+      items.map((n) => `<option value="${n.code}">${esc(n.name)}</option>`).join('');
+    sel.disabled = items.length === 0;
+    sel.hidden = items.length === 0;
+    root.classList.toggle('two', selD.hidden);
+  };
+
+  fill(selP, tree, '省 / 直辖市');
+  fill(selC, [], '市 / 地区');
+  fill(selD, [], '区县');
+
+  const sync = () => {
+    const p = tree.find((x) => x.code === selP.value);
+    const c = p ? (p.children || []).find((x) => x.code === selC.value) : null;
+    const d = c ? (c.children || []).find((x) => x.code === selD.value) : null;
+    hidden.value = d?.code || c?.code || p?.code || '';
+  };
+
+  selP.onchange = () => {
+    const p = tree.find((x) => x.code === selP.value);
+    fill(selC, p?.children || [], MUNI.has(selP.value) ? '区 / 县' : '市 / 地区');
+    fill(selD, [], '区县');
+    selC.value = '';
+    selD.value = '';
+    sync();
+  };
+  selC.onchange = () => {
+    const p = tree.find((x) => x.code === selP.value);
+    const c = p ? (p.children || []).find((x) => x.code === selC.value) : null;
+    fill(selD, c?.children || [], '区县（可选）');
+    selD.value = '';
+    sync();
+  };
+  selD.onchange = sync;
+
+  // 回填
+  const path = regionPath(tree, initialCode);
+  if (path.length) {
+    selP.value = path[0].code;
+    selP.onchange();
+    if (path[1]) { selC.value = path[1].code; selC.onchange(); }
+    if (path[2]) { selD.value = path[2].code; }
+    sync();
+  }
+}
+// ── 登录 ───────────────────────────────────────────────────
+async function openLogin() {
+  if (S.me) return openCase();
+  let tree;
+  try { tree = await getRegionTree(); } catch { toast('地区数据没加载出来，稍后再试', 'warn'); return; }
+
+  const tpl = $('#tpl-login');
+  const node = tpl.content.cloneNode(true);
+  const wrap = document.createElement('div');
+  wrap.appendChild(node);
+
+  const serverSel = wrap.querySelector('#sel-server');
+  serverSel.innerHTML = `<option value="">选择渠道服</option>` + S.servers.map((s) =>
+    `<option value="${esc(s.key)}">${esc(s.name)}${s.region === 'cn_official' ? '（官方大区）' : ''}</option>`
+  ).join('');
+
+  openCard({
+    title: S.me ? '你已经登录了' : '登录 9友地图',
+    body: wrap,
+    onMount: (body) => {
+      mountRegionPicker(body.querySelector('#login-region'), tree, S.cityCode);
+      const form = body.querySelector('#login-form');
+      const btnSend = body.querySelector('#btn-send-code');
+      const btnSubmit = body.querySelector('#btn-do-login');
+      const devHint = body.querySelector('#dev-hint');
+
+      const checks = ['c_terms', 'c_age'].map((n) => form.elements[n]);
+      const syncBtn = () => { btnSubmit.disabled = !checks.every((c) => c.checked); };
+      checks.forEach((c) => (c.onchange = syncBtn));
+
+      // 一键同意：四个勾选框一起勾上
+      const agreeAll = body.querySelector('#btn-agree-all');
+      if (agreeAll) {
+        agreeAll.onclick = () => {
+          ['c_terms', 'c_location', 'c_uid', 'c_age'].forEach((n) => {
+            if (form.elements[n]) form.elements[n].checked = true;
+          });
+          syncBtn();
+          toast('已勾选全部条款，可以登录了', 'ok');
+        };
+      }
+
+      btnSend.onclick = async () => {
+        const email = form.elements.email.value.trim();
+        if (!email) return toast('先填邮箱');
+        btnSend.disabled = true;
+        try {
+          const r = await api('/api/auth/request-code', { method: 'POST', body: { email } });
+          toast('验证码已生成', 'ok');
+          if (r.devCode) {
+            form.elements.code.value = r.devCode;
+            devHint.hidden = false;
+            devHint.textContent = `开发模式：验证码 ${r.devCode}（正式环境会发到邮箱）`;
+          }
+          let left = 60;
+          btnSend.textContent = `${left}s`;
+          const timer = setInterval(() => {
+            left--;
+            btnSend.textContent = `${left}s`;
+            if (left <= 0) { clearInterval(timer); btnSend.disabled = false; btnSend.textContent = '获取验证码'; }
+          }, 1000);
+        } catch (err) {
+          btnSend.disabled = false;
+          toast(err.message, 'warn');
+        }
+      };
+
+      form.onsubmit = async (e) => {
+        e.preventDefault();
+        const payload = {
+          email: form.elements.email.value.trim(),
+          code: form.elements.code.value.trim(),
+          serverKey: form.elements.serverKey.value,
+          cityCode: form.elements.cityCode.value,
+          nickname: form.elements.nickname.value.trim(),
+          consents: {
+            terms: form.elements.c_terms.checked,
+            privacy: form.elements.c_terms.checked,
+            age14: form.elements.c_age.checked,
+            location: form.elements.c_location.checked,
+            uid: form.elements.c_uid.checked
+          }
+        };
+        if (!payload.consents.terms) return toast('请先同意条款', 'warn');
+        if (!payload.consents.age14) return toast('请先确认年龄', 'warn');
+        if (!payload.code) return toast('请填写验证码');
+        if (!payload.cityCode) return toast('请选择所在地区', 'warn');
+        try {
+          const r = await api('/api/auth/verify', { method: 'POST', body: payload });
+          S.me = r.user;
+          S.consent = r.consent;
+          S.cityCode = r.user.cityCode || S.cityCode;
+          closeCard();
+          renderAuthState();
+          toast(`欢迎回来，${r.user.nickname}`, 'ok');
+          loadWeather(S.cityCode);
+          await reloadAll();
+        } catch (err) {
+          toast(err.message, 'warn');
+        }
+      };
+    }
+  });
+}
+
+// ── 手提箱 ─────────────────────────────────────────────────
+async function openCase() {
+  if (!S.me) { openLogin(); return; }
+  let data;
+  try { data = await api('/api/me'); } catch (err) { toast(err.message, 'warn'); return; }
+  S.consent = data.consent;
+  const u = data.user;
+
+  let charGroups = [];
+  try { charGroups = await getCharacters(); } catch { /* 列表挂了也不影响其它设置 */ }
+
+  const myMarkers = data.markers.length
+    ? data.markers.map((m) => `<li class="near-item"><span class="near-avatar same">${m.kind === 'rabbit' ? '兔' : '伞'}</span>
+        <span class="near-main"><span class="near-name">${m.kind === 'rabbit' ? '金兔子' : '伞'}</span>
+        <span class="near-sub">${m.lat.toFixed(3)}, ${m.lng.toFixed(3)}</span></span>
+        <button class="btn btn-small" data-del="${esc(m.id)}">收回</button></li>`).join('')
+    : `<li class="near-item"><span class="near-sub">还没有标记，点地图放一个吧。</span></li>`;
+
+  openCard({
+    wide: true,
+    title: '手提箱',
+    body: `
+      ${['admin', 'site_admin'].includes(u.role)
+        ? '<p style="margin:0 0 10px"><a class="btn btn-small" href="/admin" target="_blank" rel="noopener">进入管理台 →</a></p>'
+        : ''}
+      <div class="profile-top">
+        <div class="profile-avatar">${esc((u.nickname || '?').slice(0, 1))}</div>
+        <div>
+          <div class="profile-name">${esc(u.nickname)}<span class="badge-server">${esc(u.serverName)}</span></div>
+          <div class="profile-meta"><span>${esc(u.cityName || '未选城市')}</span><span>同伞之交 ${data.friendCount}</span><span>${u.uidPublic ? 'UID 已公开' : 'UID 未公开'}</span></div>
+        </div>
+      </div>
+      <h3 style="font-size:13px;margin:14px 0 6px">我的标记</h3>
+      <ul class="near-list" style="max-height:150px;border:1px solid var(--line);border-radius:2px">${myMarkers}</ul>
+
+      <h3 style="font-size:13px;margin:16px 0 6px">资料</h3>
+      <label class="field"><span>昵称</span><input id="me-nickname" maxlength="16" value="${esc(u.nickname)}"></label>
+      <div class="field" style="margin-top:8px">
+        <span>本命角色 <em>可搜索，也可以不填</em></span>
+        <div id="me-fav-picker"></div>
+      </div>
+      <label class="field" style="margin-top:8px"><span>一句话签名</span><input id="me-bio" maxlength="80" value="${esc(u.bio || '')}" placeholder="想遇到什么样的同好"></label>
+      <div class="field-row" style="margin-top:8px">
+        <label class="field grow"><span>游戏 UID <em>可选</em></span><input id="me-uid" maxlength="12" value="${esc(u.uid || '')}" placeholder="纯数字"></label>
+        <label class="consent" style="align-items:center"><input type="checkbox" id="me-uid-public" ${u.uidPublic ? 'checked' : ''}><span>对同服公开</span></label>
+      </div>
+      <label class="field" style="margin-top:8px"><span>位置精度</span>
+        <select id="me-precision">
+          <option value="fuzzy" ${u.precision === 'fuzzy' ? 'selected' : ''}>模糊（约 500 米，推荐）</option>
+          <option value="exact" ${u.precision === 'exact' ? 'selected' : ''}>精确（不推荐）</option>
+          <option value="city" ${u.precision === 'city' ? 'selected' : ''}>仅城市中心</option>
+        </select></label>
+
+      <h3 style="font-size:13px;margin:16px 0 6px">隐私与同意</h3>
+      <div class="consent-box">
+        <label class="consent"><input type="checkbox" id="p-location" ${data.consent.state.location ? 'checked' : ''}><span>在公开地图展示我的位置</span></label>
+        <label class="consent"><input type="checkbox" id="p-uid" ${data.consent.state.uid ? 'checked' : ''}><span>向同服用户展示我的 UID</span></label>
+      </div>
+      <p class="tip">关掉位置展示后，你的标记会立刻从地图上消失（数据保留，可以再打开）。</p>`,
+    foot: `<button class="btn btn-ghost" data-logout>退出登录</button><button class="btn btn-primary" data-save>保存</button>`,
+    onMount: (body, foot) => {
+      const favPicker = mountCharPicker(body.querySelector('#me-fav-picker'), charGroups, u.favChar);
+      body.querySelectorAll('[data-del]').forEach((b) => {
+        b.onclick = async () => {
+          await api(`/api/map/${b.dataset.del}`, { method: 'DELETE' });
+          toast('收回了一个标记'); closeCard(); reloadAll();
+        };
+      });
+      body.querySelector('#p-location').onchange = async (e) => {
+        await api('/api/consents', { method: 'POST', body: { type: 'location', action: e.target.checked ? 'agree' : 'withdraw' } });
+        toast(e.target.checked ? '已开启位置展示' : '已关闭，标记已下架');
+        reloadAll();
+      };
+      body.querySelector('#p-uid').onchange = async (e) => {
+        await api('/api/consents', { method: 'POST', body: { type: 'uid', action: e.target.checked ? 'agree' : 'withdraw' } });
+        toast(e.target.checked ? '已开启 UID 展示' : '已关闭 UID 展示');
+      };
+      foot.querySelector('[data-logout]').onclick = async () => {
+        await api('/api/auth/logout', { method: 'POST' });
+        S.me = null; S.consent = null;
+        closeCard(); renderAuthState(); toast('已退出');
+        reloadAll();
+      };
+      foot.querySelector('[data-save]').onclick = async () => {
+        try {
+          const r = await api('/api/me', {
+            method: 'PATCH',
+            body: {
+              nickname: body.querySelector('#me-nickname').value,
+              favChar: favPicker.get(),
+              bio: body.querySelector('#me-bio').value,
+              uidGame: body.querySelector('#me-uid').value,
+              uidPublic: body.querySelector('#me-uid-public').checked,
+              precision: body.querySelector('#me-precision').value
+            }
+          });
+          S.me = { ...S.me, ...r.user };
+          closeCard(); toast('保存好了', 'ok'); await reloadAll(); renderAuthState();
+        } catch (err) { toast(err.message, 'warn'); }
+      };
+    }
+  });
+}
+
+// ── 我的 ───────────────────────────────────────────────────
+async function openMine() {
+  if (!S.me) { openLogin(); return; }
+  const mine = S.markers.filter((m) => m.isMine);
+  openCard({
+    title: '我的',
+    body: mine.length
+      ? `<ul class="near-list" style="max-height:220px">${mine.map((m) => `
+          <li class="near-item" data-fly="${esc(m.id)}">
+            <span class="near-avatar same">${m.kind === 'rabbit' ? '兔' : '伞'}</span>
+            <span class="near-main"><span class="near-name">${m.kind === 'rabbit' ? '金兔子' : '伞'}</span>
+            <span class="near-sub">${m.label ? esc(m.label) + ' · ' : ''}${m.lat.toFixed(3)}, ${m.lng.toFixed(3)}</span></span>
+          </li>`).join('')}</ul>
+         <p class="tip">点一个标记飞过去；在地图上点别处可以放金兔子。</p>`
+      : `<p class="profile-bio">你还没有撑伞。</p><p class="tip">在地图上点一下，放下你的第一把伞。</p>`,
+    foot: `<button class="btn btn-primary" data-close>去地图上看看</button>`,
+    onMount: (body, foot) => {
+      body.querySelectorAll('[data-fly]').forEach((li) => {
+        li.onclick = () => {
+          const m = mine.find((x) => x.id === li.dataset.fly);
+          if (m) { S.map.flyTo(m.lat, m.lng, Math.max(S.map.zoom, 8)); closeCard(); }
+        };
+      });
+      foot.querySelector('[data-close]').onclick = () => { closeCard(); showPanel(false); };
+    }
+  });
+}
+
+// ── 条款 ───────────────────────────────────────────────────
+function openLegal() {
+  const docs = S.site?.legal?.docs || [];
+  openCard({
+    title: '条款与文件',
+    body: `<p class="form-hint">版本 ${esc(S.site?.legal?.version || '')}。每份文件的文本校验码是留痕用的，条款更新后会要求重新同意。</p>
+      <ul class="near-list" style="max-height:320px">
+        ${docs.map((d) => `<li class="near-item"><span class="near-main">
+          <span class="near-name">${esc(d.title)}</span>
+          <span class="near-sub">${esc(d.type)} · 校验码 ${esc(d.hash)}</span></span>
+          <a class="btn btn-small" href="/legal/${esc(d.slug)}" target="_blank" rel="noopener">查看</a></li>`).join('')}
+      </ul>`,
+    foot: `<button class="btn btn-ghost" data-close>关上</button>`,
+    onMount: (body, foot) => { foot.querySelector('[data-close]').onclick = closeCard; }
+  });
+}
+
+// ── 天气 / 底图设置 ────────────────────────────────────────
+async function openWeatherCard() {
+  let tree;
+  try { tree = await getRegionTree(); } catch { toast('地区数据没加载出来，稍后再试', 'warn'); return; }
+
+  const current = S.weather?.ok
+    ? `${S.weather.regionLabel || S.weather.cityName} · ${S.weather.text} ${S.weather.temp}°`
+    : '暂时取不到天气';
+
+  openCard({
+    title: '界面天气',
+    body: `
+      <p class="form-hint">现在：${esc(current)}</p>
+      <div class="field">
+        <span>所在地区 <em>省 → 市 → 区县，只用来取天气，不会公开</em></span>
+        <div class="region-row" id="weather-region">
+          <select data-region="province" aria-label="省级行政区"></select>
+          <select data-region="city" aria-label="地级市"></select>
+          <select data-region="county" aria-label="区县"></select>
+        </div>
+        <input type="hidden" name="cityCode">
+      </div>
+      <div class="field-row" style="margin-top:14px;flex-wrap:wrap">
+        <button class="btn btn-small" data-mock="clear">晴</button>
+        <button class="btn btn-small" data-mock="rain">雨</button>
+        <button class="btn btn-small" data-mock="storm">暴雨</button>
+        <button class="btn btn-small" data-mock="snow">雪</button>
+        <button class="btn btn-small" data-mock="fog">雾</button>
+        <button class="btn btn-small" data-mock="night">夜</button>
+      </div>
+      <p class="tip">上面的按钮是预览效果。正式环境会按你选的地区实时取天气；你所在地区真在下暴雨时，会触发「暴雨预警」。</p>`,
+    foot: `<button class="btn btn-primary" data-ok>按这个地区取天气</button>`,
+    onMount: (body, foot) => {
+      mountRegionPicker(body.querySelector('#weather-region'), tree, S.cityCode);
+      foot.querySelector('[data-ok]').onclick = async () => {
+        const code = body.querySelector('input[name="cityCode"]').value;
+        if (!code) return toast('先选到市或区县', 'warn');
+        S.cityCode = code;
+        S.weatherMock = '';
+        closeCard();
+        if (S.me) await api('/api/me', { method: 'PATCH', body: { cityCode: code } }).catch(() => {});
+        loadWeather(code);
+      };
+      body.querySelectorAll('[data-mock]').forEach((b) => {
+        b.onclick = () => {
+          S.weatherMock = b.dataset.mock;
+          loadWeather(S.cityCode, b.dataset.mock);
+          toast(`预览：${b.textContent}`);
+        };
+      });
+    }
+  });
+}
+// ── 本命角色选择 ───────────────────────────────────────────
+let charCache = null;
+
+async function getCharacters() {
+  if (charCache) return charCache;
+  const res = await fetch('/data/characters.json');
+  if (!res.ok) throw new Error('角色列表没加载出来');
+  const data = await res.json();
+  charCache = data.groups || [];
+  return charCache;
+}
+
+/** 搜索框 + 分组多行下拉（142 位角色，直接一个下拉太难翻） */
+function mountCharPicker(root, groups, initial) {
+  const total = groups.reduce((n, g) => n + g.items.length, 0);
+  const options = groups.map((g) => {
+    const items = g.items.map((n) =>
+      `<option value="${esc(n)}"${n === initial ? ' selected' : ''}>${esc(n)}</option>`).join('');
+    return `<optgroup label="${esc(g.g)}">${items}</optgroup>`;
+  }).join('');
+
+  // 旧数据可能是手填的名字，列表里没有就单独留一项，别把人家的选择吞掉
+  const all = groups.flatMap((g) => g.items);
+  const extra = initial && !all.includes(initial)
+    ? `<optgroup label="之前填的"><option value="${esc(initial)}" selected>${esc(initial)}</option></optgroup>`
+    : '';
+
+  root.innerHTML = `
+    <div class="char-current">
+      <span>已选</span>
+      <strong class="char-current-name">（未选择）</strong>
+      <button type="button" class="link-btn char-clear">清除</button>
+    </div>
+    <input type="search" class="char-search" placeholder="搜索角色（共 ${total} 位）" autocomplete="off">
+    <select class="char-select" size="8" aria-label="角色列表">
+      <option value="">（不填）</option>
+      ${extra}
+      ${options}
+    </select>`;
+
+  const search = root.querySelector('.char-search');
+  const sel = root.querySelector('.char-select');
+  const current = root.querySelector('.char-current-name');
+
+  const syncCurrent = () => {
+    const v = sel.value;
+    current.textContent = v || '（未选择）';
+    current.classList.toggle('empty', !v);
+  };
+  sel.onchange = syncCurrent;
+  root.querySelector('.char-clear').onclick = () => {
+    sel.value = '';
+    search.value = '';
+    search.oninput();
+    syncCurrent();
+  };
+
+  search.oninput = () => {
+    const q = search.value.trim().toLowerCase();
+    root.querySelectorAll('optgroup').forEach((og) => {
+      let visible = 0;
+      og.querySelectorAll('option').forEach((o) => {
+        const hit = !q || o.value.toLowerCase().includes(q);
+        o.hidden = !hit;
+        o.style.display = hit ? '' : 'none';
+        if (hit) visible++;
+      });
+      og.hidden = visible === 0;
+      og.style.display = visible === 0 ? 'none' : '';
+    });
+  };
+  syncCurrent();
+  return {
+    get: () => sel.value,
+    set: (v) => { sel.value = v || ''; syncCurrent(); }
+  };
+}
+// ── 设置 ───────────────────────────────────────────────────
+const DEFAULT_SETTINGS = {
+  font: 'm', labels: true, rabbits: true,
+  sameOnly: false, grain: true, reduceMotion: false
+};
+
+function loadSettings() {
+  try { return { ...DEFAULT_SETTINGS, ...JSON.parse(localStorage.getItem('you.settings') || '{}') }; }
+  catch { return { ...DEFAULT_SETTINGS }; }
+}
+function saveSettings() {
+  try { localStorage.setItem('you.settings', JSON.stringify(S.settings)); } catch { /* 忽略 */ }
+}
+function applySettings() {
+  const s = S.settings;
+  document.documentElement.dataset.font = s.font;
+  document.body.classList.toggle('no-grain', !s.grain);
+  document.body.dataset.reduceMotion = s.reduceMotion ? '1' : '0';
+  S.map?.setOptions({
+    labels: s.labels, rabbits: s.rabbits, sameOnly: s.sameOnly
+  });
+}
+
+function openSettings() {
+  const s = S.settings;
+  openCard({
+    title: '设置',
+    body: `
+      <h3 class="set-h">字体大小</h3>
+      <div class="set-seg" id="set-font">
+        <button data-v="s" type="button">小</button>
+        <button data-v="m" type="button">标准</button>
+        <button data-v="l" type="button">大</button>
+        <button data-v="xl" type="button">特大</button>
+      </div>
+
+      <h3 class="set-h">图层</h3>
+      <div class="set-list">
+        <label class="set-row"><input type="checkbox" data-k="labels"><span>城市名</span></label>
+        <label class="set-row"><input type="checkbox" data-k="rabbits"><span>金兔子</span></label>
+        <label class="set-row"><input type="checkbox" data-k="sameOnly"><span>只看同服（异服标记会隐藏）</span></label>
+        <label class="set-row"><input type="checkbox" data-k="grain"><span>纸面纹理</span></label>
+      </div>
+
+      <h3 class="set-h">动效</h3>
+      <div class="set-list">
+        <label class="set-row"><input type="checkbox" data-k="reduceMotion"><span>减少动态效果（关闭天气粒子与动画）</span></label>
+      </div>
+      <p class="tip">这些设置只保存在这台设备上，不影响别人看到的地图。</p>`,
+    foot: `<button class="btn btn-ghost" data-reset>恢复默认</button><button class="btn btn-primary" data-close>好了</button>`,
+    onMount: (body, foot) => {
+      const seg = body.querySelector('#set-font');
+      const syncSeg = () => {
+        seg.querySelectorAll('[data-v]').forEach((b) => {
+          b.classList.toggle('on', b.dataset.v === S.settings.font);
+        });
+      };
+      seg.querySelectorAll('[data-v]').forEach((b) => {
+        b.onclick = () => {
+          S.settings.font = b.dataset.v;
+          syncSeg();
+          applySettings();
+          saveSettings();
+        };
+      });
+      body.querySelectorAll('input[data-k]').forEach((cb) => {
+        cb.checked = !!S.settings[cb.dataset.k];
+        cb.onchange = () => {
+          S.settings[cb.dataset.k] = cb.checked;
+          applySettings();
+          saveSettings();
+        };
+      });
+      syncSeg();
+      foot.querySelector('[data-reset]').onclick = () => {
+        S.settings = { ...DEFAULT_SETTINGS };
+        applySettings();
+        saveSettings();
+        closeCard();
+        toast('已恢复默认设置', 'ok');
+      };
+      foot.querySelector('[data-close]').onclick = closeCard;
+    }
+  });
+}
+
+// ── 公告 ───────────────────────────────────────────────────
+const NOTICE_SEEN_KEY = 'you.noticesSeen';
+
+function latestNoticeTime(list) {
+  return list.reduce((max, n) => Math.max(max, Date.parse(n.created_at) || 0), 0);
+}
+
+async function refreshNoticeDot() {
+  try {
+    const { notices } = await api('/api/notices');
+    const seen = Number(localStorage.getItem(NOTICE_SEEN_KEY) || 0);
+    const dot = $('#notice-dot');
+    if (dot) dot.hidden = !(latestNoticeTime(notices) > seen);
+  } catch { /* 静默 */ }
+}
+
+async function openNotices() {
+  let notices = [];
+  try {
+    notices = (await api('/api/notices')).notices;
+  } catch (err) {
+    toast(err.message, 'warn');
+    return;
+  }
+  const fmt = (iso) => {
+    const d = new Date(iso);
+    return `${d.getMonth() + 1}月${d.getDate()}日 ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  };
+  const body = notices.length
+    ? `<div class="notice-list">${notices.map((n) => `
+        <article class="notice ${esc(n.level || 'info')}">
+          <div class="notice-head">
+            <strong>${esc(n.title)}</strong>
+            ${n.pinned ? '<em class="pin">置顶</em>' : ''}
+            <time>${fmt(n.created_at)}</time>
+          </div>
+          <p>${esc(n.body).replace(/\n/g, '<br>')}</p>
+        </article>`).join('')}</div>`
+    : `<p class="profile-bio">还没有公告。</p>`;
+
+  openCard({
+    title: '公告',
+    body,
+    foot: `<button class="btn btn-ghost" data-close>关上</button>`,
+    onMount: (bodyEl, foot) => {
+      foot.querySelector('[data-close]').onclick = closeCard;
+    }
+  });
+
+  try { localStorage.setItem(NOTICE_SEEN_KEY, String(latestNoticeTime(notices))); } catch { /* 忽略 */ }
+    const dot = $('#notice-dot');
+  if (dot) dot.hidden = true;
+}
+// ── 绑定 ───────────────────────────────────────────────────
+$('#btn-login').onclick = () => { S.me ? openCase() : openLogin(); };
+$('#btn-place').onclick = () => {
+  if (!S.me) return openLogin();
+  if (!S.consent?.state?.location) {
+    const v = S.map.getView();
+    return openLocationConsent(v.center.lat, v.center.lng);
+  }
+  toast('在地图上点一下，就能把伞撑在那里');
+  S.map.onClick = onMapClick;
+};
+$('#btn-weather').onclick = openWeatherCard;
+document.querySelectorAll('[data-act="settings"]').forEach((b) => {
+  b.onclick = openSettings;
+});
+document.querySelectorAll('[data-zoom]').forEach((b) => {
+  b.onclick = () => {
+    const act = b.dataset.zoom;
+    if (act === 'in') S.map.zoomBy(0.7);
+    else if (act === 'out') S.map.zoomBy(-0.7);
+  };
+});
+$('#btn-basemap').onclick = () => {
+  toast(S.site?.tdtTk ? '当前是天地图底图。未配置 Key 时会用纸面底图。' : '未配置天地图 Key，当前是纸面底图（不展示行政边界）');
+};
+
+document.querySelectorAll('.rail-item').forEach((b) => {
+  b.onclick = () => {
+    document.querySelectorAll('.rail-item').forEach((x) => x.classList.toggle('on', x === b));
+    const act = b.dataset.act;
+    if (act === 'map') { showPanel(false); closeCard(); S.map?.resetView(); }
+    if (act === 'radar') openPanel('暴雨雷达');
+    if (act === 'notices') openNotices();
+    if (act === 'mine') openMine();
+    if (act === 'case') openCase();
+    if (act === 'legal') openLegal();
+  };
+});
+
+boot();
