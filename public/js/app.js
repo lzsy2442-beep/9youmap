@@ -910,6 +910,7 @@ async function openCase() {
 }
 
 // ── 我的 ───────────────────────────────────────────────────
+// 旧的「我的」面板已并入 openCase（侧边栏只留一个「我的」），这里保留函数备将来拆分用
 async function openMine() {
   if (!S.me) { openLogin(); return; }
   const mine = S.markers.filter((m) => m.isMine);
@@ -1330,7 +1331,6 @@ document.querySelectorAll('.rail-item').forEach((b) => {
     if (act === 'map') { showPanel(false); closeCard(); S.map?.resetView(); }
     if (act === 'radar') runAction(() => openPanel('暴雨雷达'));
     if (act === 'notices') runAction(openNotices);
-    if (act === 'mine') runAction(openMine);
     if (act === 'case') runAction(openCase);
     if (act === 'legal') runAction(openLegal);
   };

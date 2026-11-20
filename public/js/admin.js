@@ -10,6 +10,11 @@ const fmtDate = (iso) => {
 };
 
 const ROLE_LABEL = { site_admin: '站长', admin: '管理员', user: '普通' };
+
+// 与后端一致的权限边界：只有站长能调整角色；站长账号任何人都不能处置
+const viewerIsOwner = () => state.me?.user?.role === 'site_admin';
+const canChangeRole = (u) => viewerIsOwner() && u.role !== 'site_admin';
+const canBan = (u) => u.role !== 'site_admin' && (viewerIsOwner() || u.role !== 'admin');
 const roleLabel = (r) => ROLE_LABEL[r] || r;
 
 const state = { me: null, tab: 'overview', notices: [], users: { page: 1, q: '' }, markers: { page: 1, q: '', server: '' }, servers: [] };
@@ -242,9 +247,8 @@ async function loadUsers(page = state.users.page, q = state.users.q) {
             <td>${u.banned ? '<span class="tag banned">已封禁</span>' : '正常'}</td>
             <td>${fmtDate(u.created_at)}</td>
             <td>
-              <button class="admin-btn small ghost" data-role="${esc(u.id)}" data-v="${u.role === 'admin' ? 'user' : 'admin'}">${u.role === 'admin' ? '降为普通' : '设为管理员'}</button>
-              <button class="admin-btn small ${u.banned ? 'ghost' : 'danger'}" data-ban="${esc(u.id)}" data-v="${u.banned ? 0 : 1}">${u.banned ? '解封' : '封禁'}</button>
-            </td>
+              ${canChangeRole(u) ? `<button class="admin-btn small ghost" data-role="${esc(u.id)}" data-v="${u.role === 'admin' ? 'user' : 'admin'}">${u.role === 'admin' ? '降为普通' : '设为管理员'}</button>` : ''}
+              ${canBan(u) ? `<button class="admin-btn small ${u.banned ? 'ghost' : 'danger'}" data-ban="${esc(u.id)}" data-v="${u.banned ? 0 : 1}">${u.banned ? '解封' : '封禁'}</button>` : '<span class="muted">—</span>'}            </td>
           </tr>`).join('') || '<tr><td colspan="7" class="empty-row">没有匹配的账号</td></tr>'}
         </tbody>
       </table>
@@ -437,12 +441,13 @@ async function openUserPanel(userId) {
       </dl>
 
       <div class="admin-actions">
-        <button class="admin-btn ${u.banned ? 'ghost' : 'danger'}" data-ban="${u.banned ? 0 : 1}">
+        ${canBan(u) ? `<button class="admin-btn ${u.banned ? 'ghost' : 'danger'}" data-ban="${u.banned ? 0 : 1}">
           ${u.banned ? '解封这个账号' : '封禁这个账号'}
-        </button>
-        <button class="admin-btn ghost" data-role="${u.role === 'admin' ? 'user' : 'admin'}">
+        </button>` : ''}
+        ${canChangeRole(u) ? `<button class="admin-btn ghost" data-role="${u.role === 'admin' ? 'user' : 'admin'}">
           ${u.role === 'admin' ? '取消管理员' : '设为管理员'}
-        </button>
+        </button>` : ''}
+        ${u.role === 'site_admin' ? '<span class="muted">站长账号不可在此修改</span>' : ''}
       </div>
 
       <h3 class="admin-h2">TA 的标记（${d.markers.length}）</h3>

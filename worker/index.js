@@ -403,7 +403,7 @@ export default {
           await store.bumpCodeTry(email);
           return fail(400, 'code_wrong', '验证码不对');
         }
-        await store.clearCode(email);
+        // 验证码等真正登录成功后再作废（新用户第一次提交只返回 PROFILE_REQUIRED）
 
         const consents = b.consents || {};
         const missing = REQUIRED_CONSENTS.filter((t) => consents[t] !== true);
@@ -436,6 +436,7 @@ export default {
           else if (consents[type] === false) await store.recordConsent({ userId: user.id, docType: type, action: 'withdraw', ip: clientIp(request), ua: request.headers.get('user-agent') });
         }
         await store.touchLastSeen(user.id);
+        await store.clearCode(email);
 
         const session = await issueSession(secret, user.id, { secure: new URL(request.url).protocol === 'https:' });
         return json({
@@ -626,9 +627,26 @@ ${renderMarkdown(md)}</article></div></body></html>`;
         }
         if (mUser && method === 'PATCH') {
           const b = await body();
-          if (mUser[1] === viewer.id && b.role && b.role !== 'site_admin' && viewer.role === 'site_admin') {
-            return fail(400, 'bad_request', '不能给自己降权');
+          const target = await store.getUserById(mUser[1]);
+          if (!target) return fail(404, 'not_found', '找不到这个用户');
+
+          // 权限边界：只有站长能改角色，站长这个角色谁都不能动
+          if (b.role !== undefined && viewer.role !== 'site_admin') {
+            return fail(403, 'forbidden', '只有站长可以调整角色');
           }
+          if (b.role !== undefined && target.role === 'site_admin') {
+            return fail(403, 'forbidden', '不能修改站长');
+          }
+          if (b.role === 'site_admin') {
+            return fail(403, 'forbidden', '站长只有一个，暂不支持转让');
+          }
+          if (b.banned !== undefined) {
+            if (target.role === 'site_admin') return fail(403, 'forbidden', '不能封禁站长');
+            if (target.role === 'admin' && viewer.role !== 'site_admin') {
+              return fail(403, 'forbidden', '只有站长可以处置管理员');
+            }
+          }
+
           const u = await store.adminSetUser(mUser[1], b);
           if (!u) return fail(400, 'bad_request', '没有可更新的字段');
           return json({ ok: true, user: u });
