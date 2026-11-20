@@ -134,8 +134,11 @@ function initMap() {
   S.fx = createWeatherFx($('#fx'));
   $('#basemap-text').textContent = tk ? '天地图' : '纸面';
   $('#foot-map').textContent = tk
-    ? '地图数据 © 天地图 · 审图号见天地图服务页（上线前请替换为当前公示的审图号）'
+    ? '底图数据 © 天地图（国家地理信息公共服务平台）'
     : '地图：纸面底图（未配置天地图 Key，不展示任何行政边界）';
+  // 只有真正用天地图时才需要展示审图号
+  const attrib = $('#foot-attrib');
+  if (attrib) attrib.hidden = !tk;
   if (tk) $('#btn-basemap').title = '天地图底图已启用';
 }
 

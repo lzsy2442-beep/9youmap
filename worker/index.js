@@ -506,7 +506,7 @@ export default {
         const md = LEGAL_TEXT[slug];
         if (!meta || !md) return fail(404, 'not_found', '没有这份文件');
         const nav = LEGAL_DOCS.map((d) => `<a href="/legal/${d.slug}" class="${d.slug === slug ? 'on' : ''}">${d.title}</a>`).join('');
-        const html = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
+        const html = `<!doctype html><html lang="zh-CN" class="legal-html"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>${meta.title} · ${SITE_NAME}</title>
 <link rel="stylesheet" href="/css/style.css"></head><body class="legal-body">
 <header class="legal-top"><a class="legal-back" href="/">← 回到地图</a><span class="legal-brand">${SITE_NAME}</span></header>
@@ -516,8 +516,11 @@ ${renderMarkdown(md)}</article></div></body></html>`;
         return new Response(html, { headers: { 'content-type': 'text/html; charset=utf-8' } });
       }
 
-      // ── 自检（不含任何密钥值，只报布尔）──────────────────
+      // ── 自检（仅管理员；不含任何密钥值，只报布尔）──────────
       if (path === '/api/diag') {
+        if (!viewer || (viewer.role !== 'admin' && viewer.role !== 'site_admin')) {
+          return fail(403, 'forbidden', '需要管理员权限');
+        }
         let tables = [];
         try {
           const r = await env.DB.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all();
