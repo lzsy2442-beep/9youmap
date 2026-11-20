@@ -409,7 +409,15 @@ export default {
         const missing = REQUIRED_CONSENTS.filter((t) => consents[t] !== true);
         let user = await store.getUserByEmail(email);
         const isNew = !user;
-        if (isNew && missing.length) return fail(428, 'CONSENT_REQUIRED', '请先同意相关条款', { missing });
+        // 新用户才需要「资料 + 同意」；老用户只凭邮箱 + 验证码即可登录
+        if (isNew) {
+          const serverKey0 = String(b.serverKey || '');
+          const cityCode0 = String(b.cityCode || '');
+          const nickname0 = String(b.nickname || '').trim();
+          if (missing.length || !serverKey0 || !cityCode0 || nickname0.length < 2) {
+            return fail(428, 'PROFILE_REQUIRED', '新用户需要完善资料', { missing, needProfile: true });
+          }
+        }
 
         if (isNew) {
           const serverKey = String(b.serverKey || '');

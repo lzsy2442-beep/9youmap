@@ -739,7 +739,8 @@ async function openLogin() {
           await reloadAll();
           if (r.isNew) openGuideWelcome(); // 首次注册：强推教程，可跳过
         } catch (err) {
-          if (err.code === 'PROFILE_REQUIRED') {
+          // 兼容旧后端：老版本返回 CONSENT_REQUIRED，含义相同——都是「新用户还得补资料」
+          if (err.code === 'PROFILE_REQUIRED' || err.code === 'CONSENT_REQUIRED') {
             // 新用户：展开资料区，让 TA 补完再提交一次
             profile.hidden = false;
             body.querySelector('#login-profile-note').textContent =
