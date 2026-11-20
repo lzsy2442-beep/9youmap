@@ -1,4 +1,4 @@
-// D1（Cloudflare SQLite）数据层：SQL 与 server/db.js 保持一致，接口全部 async
+﻿// D1（Cloudflare SQLite）数据层：SQL 与 server/db.js 保持一致，接口全部 async
 import { LIMITS, SERVER_MAP } from '../server/constants.js';
 import { LEGAL_HASHES } from './data-legal.js';
 import { getRegion } from './regions.js';
@@ -206,12 +206,40 @@ export function createStore(env) {
 
     async listFriends(userId) {
       return all(`
-        SELECT u.id,u.nickname,u.server_key,s.name AS server_name,s.color AS server_color,f.since
+        SELECT u.id, u.nickname, u.server_key, u.fav_char, u.bio,
+               s.name AS server_name, s.color AS server_color, s.short AS server_short,
+               f.since,
+               m.id AS marker_id, m.lat, m.lng, m.label
         FROM friends f
         JOIN users u ON u.id = CASE WHEN f.a = ? THEN f.b ELSE f.a END
         LEFT JOIN servers s ON s.key = u.server_key
-        WHERE f.a = ? OR f.b = ? ORDER BY f.since DESC
+        LEFT JOIN markers m ON m.id = (
+          SELECT id FROM markers WHERE user_id = u.id AND kind = 'umbrella' AND visible = 1
+          ORDER BY created_at LIMIT 1
+        )
+        WHERE f.a = ? OR f.b = ?
+        ORDER BY f.since DESC
       `, userId, userId, userId);
+    },
+
+    async listTouchesReceived(userId, limit = 40) {
+      return all(`
+        SELECT t.kind, t.created_at, t.from_user,
+               u.nickname AS from_nickname,
+               u.server_key AS from_server_key,
+               s.name AS from_server_name, s.short AS from_server_short, s.color AS from_server_color,
+               m.id AS from_marker_id, m.lat AS from_lat, m.lng AS from_lng, m.label AS from_label
+        FROM touches t
+        JOIN users u ON u.id = t.from_user
+        LEFT JOIN servers s ON s.key = u.server_key
+        LEFT JOIN markers m ON m.id = (
+          SELECT id FROM markers WHERE user_id = t.from_user AND kind = 'umbrella' AND visible = 1
+          ORDER BY created_at LIMIT 1
+        )
+        WHERE t.to_user = ?
+        ORDER BY t.created_at DESC
+        LIMIT ?
+      `, userId, limit);
     },
 
     // ── 同意 ──────────────────────────────────────────────

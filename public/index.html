@@ -129,6 +129,8 @@
       </label>
       <button class="btn btn-small" id="btn-send-code" type="button">获取验证码</button>
     </div>
+    <div id="login-profile" hidden>
+      <p class="form-note" id="login-profile-note">首次登录，还需要填下面几项；以后登录只凭邮箱和验证码。</p>
     <label class="field">
       <span>渠道服 <em>决定能不能在游戏里加好友</em></span>
       <select name="serverKey" id="sel-server" required></select>
@@ -169,7 +171,8 @@
         <span>我确认我已年满 14 周岁</span>
       </label>
     </div>
-    <p class="form-fine">我们不会索要你的游戏账号密码，也不会在后台读取你的定位。</p>
+    </div>
+    <p class="form-fine">我们不会索要您的游戏账号密码，也不会在后台读取您的定位。</p>
     <button class="btn btn-primary btn-block" type="submit" id="btn-do-login" disabled>登录 / 注册</button>
     <p class="dev-hint" id="dev-hint" hidden></p>
   </form>

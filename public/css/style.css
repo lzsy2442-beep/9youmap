@@ -1119,3 +1119,46 @@ body.no-grain .paper-grain { display: none; }
 .char-current-name { font-size: calc(14px * var(--fs)); font-weight: 600; color: var(--ink); }
 .char-current-name.empty { font-weight: 400; color: var(--ink-faint); }
 .char-clear { margin-left: auto; }
+
+/* ── 使用指南的表格 ───────────────────────────────── */
+.guide-table {
+  width: 100%;
+  margin: 12px 0 16px;
+  border-collapse: collapse;
+  font-size: calc(13.5px * var(--fs));
+  color: var(--ink-soft);
+}
+.guide-table th,
+.guide-table td {
+  padding: 7px 10px;
+  border: 1px solid var(--line);
+  text-align: left;
+  vertical-align: top;
+}
+.guide-table th { background: rgba(176, 138, 79, 0.1); color: var(--ink); font-weight: 600; }
+.guide-table td strong { color: var(--ink); }
+@media (max-width: 720px) {
+  .guide-table { font-size: calc(12.5px * var(--fs)); }
+  .guide-table th, .guide-table td { padding: 6px 7px; }
+}
+.legal-foot-note { margin-top: 26px; padding-top: 12px; border-top: 1px solid var(--line); font-size: calc(12.5px * var(--fs)); color: var(--ink-faint); }
+.form-note {
+  margin: 0 0 10px;
+  padding: 8px 10px;
+  font-size: calc(12px * var(--fs));
+  color: var(--ink-soft);
+  background: rgba(176, 138, 79, 0.08);
+  border-left: 2px solid var(--brass);
+  border-radius: 2px;
+}
+
+/* ── 新手引导的三步 ───────────────────────────────── */
+.guide-steps {
+  margin: 10px 0 12px;
+  padding-left: 20px;
+  font-size: calc(13.5px * var(--fs));
+  color: var(--ink-soft);
+  line-height: 1.75;
+}
+.guide-steps li { margin-bottom: 8px; }
+.guide-steps b { color: var(--ink); }

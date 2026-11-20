@@ -25,12 +25,18 @@ const S = {
 
 // ── API ─────────────────────────────────────────────────────
 async function api(path, { method = 'GET', body } = {}) {
-  const res = await fetch(path, {
-    method,
-    headers: body ? { 'content-type': 'application/json' } : undefined,
-    body: body ? JSON.stringify(body) : undefined,
-    credentials: 'same-origin'
-  });
+  let res;
+  try {
+    res = await fetch(path, {
+      method,
+      headers: body ? { 'content-type': 'application/json' } : undefined,
+      body: body ? JSON.stringify(body) : undefined,
+      credentials: 'same-origin'
+    });
+  } catch {
+    // 网络层失败（断网、域名被拦、服务没起来）——给一句人话，别直接抛 Failed to fetch
+    throw new Error('连不上服务器，请检查网络后重试');
+  }
   let data = null;
   try { data = await res.json(); } catch { /* 可能是 HTML */ }
   if (!res.ok || (data && data.ok === false)) {
@@ -42,6 +48,18 @@ async function api(path, { method = 'GET', body } = {}) {
     throw e;
   }
   return data;
+}
+
+/** 刚刚 / 5 分钟前 / 3 小时前 / 2 天前 */
+function fmtAgo(iso) {
+  const t = Date.parse(iso);
+  if (!Number.isFinite(t)) return '';
+  const s = Math.max(0, Math.floor((Date.now() - t) / 1000));
+  if (s < 60) return '刚刚';
+  if (s < 3600) return `${Math.floor(s / 60)} 分钟前`;
+  if (s < 86400) return `${Math.floor(s / 3600)} 小时前`;
+  if (s < 86400 * 30) return `${Math.floor(s / 86400)} 天前`;
+  return new Date(t).toLocaleDateString('zh-CN');
 }
 
 // ── Toast ───────────────────────────────────────────────────
@@ -622,9 +640,15 @@ async function openLogin() {
       const btnSubmit = body.querySelector('#btn-do-login');
       const devHint = body.querySelector('#dev-hint');
 
+      const profile = body.querySelector('#login-profile');
       const checks = ['c_terms', 'c_age'].map((n) => form.elements[n]);
-      const syncBtn = () => { btnSubmit.disabled = !checks.every((c) => c.checked); };
+      // 资料区没展开时（老用户），只要有验证码就能提交
+      const syncBtn = () => {
+        const code = form.elements.code.value.trim();
+        btnSubmit.disabled = profile.hidden ? code.length < 4 : !checks.every((c) => c.checked);
+      };
       checks.forEach((c) => (c.onchange = syncBtn));
+      form.elements.code.oninput = syncBtn;
 
       // 一键同意：四个勾选框一起勾上
       const agreeAll = body.querySelector('#btn-agree-all');
@@ -649,6 +673,7 @@ async function openLogin() {
             form.elements.code.value = r.devCode;
             devHint.hidden = false;
             devHint.textContent = `开发模式：验证码 ${r.devCode}（正式环境会发到邮箱）`;
+            syncBtn(); // 程序赋值不会触发 input 事件，手动刷一次按钮状态
           }
           let left = 60;
           btnSend.textContent = `${left}s`;
@@ -665,13 +690,11 @@ async function openLogin() {
 
       form.onsubmit = async (e) => {
         e.preventDefault();
+        // 资料区没展开（老用户）时，不要提交同意项——否则未勾选会被当成「撤回同意」记进 consent 日志
         const payload = {
           email: form.elements.email.value.trim(),
           code: form.elements.code.value.trim(),
-          serverKey: form.elements.serverKey.value,
-          cityCode: form.elements.cityCode.value,
-          nickname: form.elements.nickname.value.trim(),
-          consents: {
+          consents: profile.hidden ? {} : {
             terms: form.elements.c_terms.checked,
             privacy: form.elements.c_terms.checked,
             age14: form.elements.c_age.checked,
@@ -679,10 +702,18 @@ async function openLogin() {
             uid: form.elements.c_uid.checked
           }
         };
-        if (!payload.consents.terms) return toast('请先同意条款', 'warn');
-        if (!payload.consents.age14) return toast('请先确认年龄', 'warn');
+        if (!profile.hidden) {
+          payload.serverKey = form.elements.serverKey.value;
+          payload.cityCode = form.elements.cityCode.value;
+          payload.nickname = form.elements.nickname.value.trim();
+        }
         if (!payload.code) return toast('请填写验证码');
-        if (!payload.cityCode) return toast('请选择所在地区', 'warn');
+        // 只在「首次登录」的表单展开后，才校验资料与同意项
+        if (!profile.hidden) {
+          if (!payload.consents.terms) return toast('请先同意条款', 'warn');
+          if (!payload.consents.age14) return toast('请先确认年龄', 'warn');
+          if (!payload.cityCode) return toast('请选择所在地区', 'warn');
+        }
         try {
           const r = await api('/api/auth/verify', { method: 'POST', body: payload });
           S.me = r.user;
@@ -693,7 +724,19 @@ async function openLogin() {
           toast(`欢迎回来，${r.user.nickname}`, 'ok');
           loadWeather(S.cityCode);
           await reloadAll();
+          if (r.isNew) openGuideWelcome(); // 首次注册：强推教程，可跳过
         } catch (err) {
+          if (err.code === 'PROFILE_REQUIRED') {
+            // 新用户：展开资料区，让 TA 补完再提交一次
+            profile.hidden = false;
+            body.querySelector('#login-profile-note').textContent =
+              '这是您第一次登录，还需要补完下面几项；以后登录只凭邮箱和验证码。';
+            form.elements.nickname.focus();
+            profile.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+            syncBtn();
+            toast('首次登录，请补完下面的资料', 'warn');
+            return;
+          }
           toast(err.message, 'warn');
         }
       };
@@ -719,10 +762,34 @@ async function openCase() {
         <button class="btn btn-small" data-del="${esc(m.id)}">收回</button></li>`).join('')
     : `<li class="near-item"><span class="near-sub">还没有标记，点地图放一个吧。</span></li>`;
 
+  const touchMap = data.touches || [];
+  const friendItems = data.friends.length
+    ? data.friends.map((f) => `<li class="near-item">
+        <span class="near-avatar same">${esc((f.nickname || '?').slice(0, 1))}</span>
+        <span class="near-main">
+          <span class="near-name">${esc(f.nickname)}<span class="badge-server">${esc(f.server_name || '')}</span></span>
+          <span class="near-sub">${f.label ? esc(f.label) : (f.lat ? '地图上有伞' : '暂时没放伞')} · 结交于 ${fmtAgo(f.since)}</span>
+        </span>
+        <button class="btn btn-small" data-fly-friend="${esc(f.id)}" ${f.lat ? '' : 'disabled'}>去看看</button>
+      </li>`).join('')
+    : `<li class="near-item"><span class="near-sub">还没有同伞之交。互相递伞才会成为同伞之交。</span></li>`;
+
+  const touchItems = touchMap.length
+    ? touchMap.slice(0, 12).map((x, i) => `<li class="near-item">
+        <span class="near-avatar ${x.kind === 'give' ? 'same' : ''}">${x.kind === 'give' ? '伞' : '敲'}</span>
+        <span class="near-main">
+          <span class="near-name">${esc(x.from_nickname)}<span class="badge-server">${esc(x.from_server_name || '')}</span></span>
+          <span class="near-sub">${x.kind === 'give' ? '向您递了伞' : '敲了敲您的伞沿'} · ${fmtAgo(x.created_at)}</span>
+        </span>
+        <button class="btn btn-small" data-touch-go="${i}" ${x.from_lat ? '' : 'disabled'}>去看看</button>
+      </li>`).join('')
+    : `<li class="near-item"><span class="near-sub">还没有人来敲伞。把伞撑在人多的地方试试。</span></li>`;
+
   openCard({
     wide: true,
     title: '手提箱',
     body: `
+      <p style="margin:0 0 8px"><a class="btn btn-small" href="/guide" target="_blank" rel="noopener">使用指南 →</a></p>
       ${['admin', 'site_admin'].includes(u.role)
         ? '<p style="margin:0 0 10px"><a class="btn btn-small" href="/admin" target="_blank" rel="noopener">进入管理台 →</a></p>'
         : ''}
@@ -735,6 +802,12 @@ async function openCase() {
       </div>
       <h3 style="font-size:13px;margin:14px 0 6px">我的标记</h3>
       <ul class="near-list" style="max-height:150px;border:1px solid var(--line);border-radius:2px">${myMarkers}</ul>
+
+      <h3 style="font-size:13px;margin:16px 0 6px">同伞之交（${data.friendCount}）</h3>
+      <ul class="near-list" style="max-height:170px;border:1px solid var(--line);border-radius:2px">${friendItems}</ul>
+
+      <h3 style="font-size:13px;margin:16px 0 6px">有人敲过您</h3>
+      <ul class="near-list" style="max-height:170px;border:1px solid var(--line);border-radius:2px">${touchItems}</ul>
 
       <h3 style="font-size:13px;margin:16px 0 6px">资料</h3>
       <label class="field"><span>昵称</span><input id="me-nickname" maxlength="16" value="${esc(u.nickname)}"></label>
@@ -767,6 +840,24 @@ async function openCase() {
         b.onclick = async () => {
           await api(`/api/map/${b.dataset.del}`, { method: 'DELETE' });
           toast('收回了一个标记'); closeCard(); reloadAll();
+        };
+      });
+      body.querySelectorAll('[data-fly-friend]').forEach((b) => {
+        b.onclick = () => {
+          const f = data.friends.find((x) => x.id === b.dataset.flyFriend);
+          if (!f || !f.lat) return toast('TA 现在没有放伞', 'warn');
+          S.map.flyTo(f.lat, f.lng, Math.max(S.map.zoom, 8));
+          closeCard();
+          toast(`来到了 ${f.nickname} 的伞边`);
+        };
+      });
+      body.querySelectorAll('[data-touch-go]').forEach((b) => {
+        b.onclick = () => {
+          const x = touchMap[Number(b.dataset.touchGo)];
+          if (!x || !x.from_lat) return toast('TA 现在没有放伞', 'warn');
+          S.map.flyTo(x.from_lat, x.from_lng, Math.max(S.map.zoom, 8));
+          closeCard();
+          toast(`来到了 ${x.from_nickname} 的伞边，点那把伞可以回敲或递伞`);
         };
       });
       body.querySelector('#p-location').onchange = async (e) => {
@@ -809,6 +900,24 @@ async function openCase() {
 async function openMine() {
   if (!S.me) { openLogin(); return; }
   const mine = S.markers.filter((m) => m.isMine);
+
+  let friends = [];
+  try { friends = (await api('/api/me')).friends || []; } catch { /* 拿不到就只显示自己的标记 */ }
+
+  const friendBlock = friends.length
+    ? `<h3 style="font-size:13px;margin:14px 0 6px">同伞之交（${friends.length}）</h3>
+       <ul class="near-list" style="max-height:180px;border:1px solid var(--line);border-radius:2px">
+         ${friends.map((f) => `<li class="near-item" data-fly-friend="${esc(f.id)}">
+           <span class="near-avatar same">${esc((f.nickname || '?').slice(0, 1))}</span>
+           <span class="near-main">
+             <span class="near-name">${esc(f.nickname)}<span class="badge-server">${esc(f.server_name || '')}</span></span>
+             <span class="near-sub">${f.label ? esc(f.label) : (f.lat ? '地图上有伞' : '暂时没放伞')}</span>
+           </span>
+           <span class="near-sub">${f.lat ? '去看看 ›' : ''}</span>
+         </li>`).join('')}
+       </ul>`
+    : '';
+
   openCard({
     title: '我的',
     body: mine.length
@@ -818,9 +927,9 @@ async function openMine() {
             <span class="near-main"><span class="near-name">${m.kind === 'rabbit' ? '金兔子' : '伞'}</span>
             <span class="near-sub">${m.label ? esc(m.label) + ' · ' : ''}${m.lat.toFixed(3)}, ${m.lng.toFixed(3)}</span></span>
           </li>`).join('')}</ul>
-         <p class="tip">点一个标记飞过去；在地图上点别处可以放金兔子。</p>`
-      : `<p class="profile-bio">你还没有撑伞。</p><p class="tip">在地图上点一下，放下你的第一把伞。</p>`,
-    foot: `<button class="btn btn-primary" data-close>去地图上看看</button>`,
+         <p class="tip">点一个标记飞过去；在地图上点别处可以放金兔子。</p>${friendBlock}`
+      : `<p class="profile-bio">您还没有撑伞。</p><p class="tip">在地图上点一下，放下您的第一把伞。</p>${friendBlock}`,
+    foot: `<button class="btn btn-ghost" data-guide>使用指南</button><button class="btn btn-primary" data-close>去地图上看看</button>`,
     onMount: (body, foot) => {
       body.querySelectorAll('[data-fly]').forEach((li) => {
         li.onclick = () => {
@@ -828,7 +937,53 @@ async function openMine() {
           if (m) { S.map.flyTo(m.lat, m.lng, Math.max(S.map.zoom, 8)); closeCard(); }
         };
       });
+      body.querySelectorAll('[data-fly-friend]').forEach((li) => {
+        li.onclick = () => {
+          const f = friends.find((x) => x.id === li.dataset.flyFriend);
+          if (!f || !f.lat) return toast('TA 现在没有放伞', 'warn');
+          S.map.flyTo(f.lat, f.lng, Math.max(S.map.zoom, 8));
+          closeCard();
+          toast(`来到了 ${f.nickname} 的伞边`);
+        };
+      });
+      foot.querySelector('[data-guide]').onclick = () => window.open('/guide', '_blank', 'noopener');
       foot.querySelector('[data-close]').onclick = () => { closeCard(); showPanel(false); };
+    }
+  });
+}
+
+// ── 新手引导 ───────────────────────────────────────────────
+const GUIDE_SEEN_KEY = 'jy_map_guide_seen_v1';
+
+function guideSeen() {
+  try { return localStorage.getItem(GUIDE_SEEN_KEY) === '1'; } catch { return false; }
+}
+function markGuideSeen() {
+  try { localStorage.setItem(GUIDE_SEEN_KEY, '1'); } catch { /* 隐私模式下忽略 */ }
+}
+
+/** 首次注册后强推；handbook=true 表示用户主动从手提箱打开 */
+function openGuideWelcome({ force = false } = {}) {
+  if (!force && guideSeen()) return;
+  openCard({
+    title: '欢迎来到 9友地图',
+    body: `
+      <p class="form-hint">三件事，一分钟看懂。</p>
+      <ol class="guide-steps">
+        <li><b>撑伞</b>：在地图上点一下您在的位置，选「伞」，确认。</li>
+        <li><b>找同服</b>：点「雷达」，同服的人排在最前面，带铜金描边。</li>
+        <li><b>递伞</b>：互相递伞才会成为「同伞之交」，那时才能看到对方的游戏 UID，去游戏里加好友。</li>
+      </ol>
+      <p class="tip">为什么不能直接加好友？因为官服和渠道服不互通——所以我们只让您看到真加得上的人。</p>
+      <p class="tip">以后想再看：手提箱 →「使用指南」。</p>`,
+    foot: `<button class="btn btn-ghost" data-skip>跳过教程</button><button class="btn btn-primary" data-full>打开完整指南</button>`,
+    onMount: (body, foot) => {
+      foot.querySelector('[data-skip]').onclick = () => { markGuideSeen(); closeCard(); };
+      foot.querySelector('[data-full]').onclick = () => {
+        markGuideSeen();
+        closeCard();
+        window.open('/guide', '_blank', 'noopener');
+      };
     }
   });
 }
@@ -1145,17 +1300,32 @@ $('#btn-basemap').onclick = () => {
   toast(S.site?.tdtTk ? '当前是天地图底图。未配置 Key 时会用纸面底图。' : '未配置天地图 Key，当前是纸面底图（不展示行政边界）');
 };
 
+// 面板入口统一兜底：异步函数抛错时给出提示，而不是静默没反应
+function runAction(fn) {
+  Promise.resolve()
+    .then(fn)
+    .catch((err) => {
+      console.error(err);
+      toast(`打开失败：${err && err.message ? err.message : '未知错误'}`, 'warn');
+    });
+}
+
 document.querySelectorAll('.rail-item').forEach((b) => {
   b.onclick = () => {
     document.querySelectorAll('.rail-item').forEach((x) => x.classList.toggle('on', x === b));
     const act = b.dataset.act;
     if (act === 'map') { showPanel(false); closeCard(); S.map?.resetView(); }
-    if (act === 'radar') openPanel('暴雨雷达');
-    if (act === 'notices') openNotices();
-    if (act === 'mine') openMine();
-    if (act === 'case') openCase();
-    if (act === 'legal') openLegal();
+    if (act === 'radar') runAction(() => openPanel('暴雨雷达'));
+    if (act === 'notices') runAction(openNotices);
+    if (act === 'mine') runAction(openMine);
+    if (act === 'case') runAction(openCase);
+    if (act === 'legal') runAction(openLegal);
   };
+});
+
+window.addEventListener('unhandledrejection', (e) => {
+  console.error(e.reason);
+  toast(`出错了：${e.reason && e.reason.message ? e.reason.message : '未知错误'}`, 'warn');
 });
 
 boot();

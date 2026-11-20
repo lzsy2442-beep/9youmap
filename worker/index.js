@@ -430,7 +430,12 @@ export default {
         await store.touchLastSeen(user.id);
 
         const session = await issueSession(secret, user.id, { secure: new URL(request.url).protocol === 'https:' });
-        return json({ ok: true, user: publicUser(user), consent: { state: await store.consentState(user.id) } }, 200, { 'set-cookie': session.cookie });
+        return json({
+          ok: true,
+          user: publicUser(user),
+          consent: { state: await store.consentState(user.id) },
+          isNew
+        }, 200, { 'set-cookie': session.cookie });
       }
 
       if (path === '/api/auth/logout' && method === 'POST') {
@@ -445,8 +450,14 @@ export default {
           consent: { state: await store.consentState(viewer.id), needs: [], version: 'v1.0', hashes: LEGAL_HASHES },
           markers: await store.listUserMarkers(viewer.id),
           friends: await store.listFriends(viewer.id),
-          friendCount: await store.countFriends(viewer.id)
+          friendCount: await store.countFriends(viewer.id),
+          touches: await store.listTouchesReceived(viewer.id, 30)
         });
+      }
+
+      if (path === '/api/touches' && method === 'GET') {
+        if (!viewer) return fail(401, 'unauthorized', '请先登录');
+        return json({ ok: true, touches: await store.listTouchesReceived(viewer.id, 50) });
       }
 
       if (path === '/api/me' && method === 'PATCH') {
@@ -640,7 +651,16 @@ ${renderMarkdown(md)}</article></div></body></html>`;
       }
 
       // ── 静态资源交给 Cloudflare 的 assets 绑定 ──────────
-      if (env.ASSETS) return env.ASSETS.fetch(request);
+      if (env.ASSETS) {
+        // 无扩展名的页面地址
+        if (path === '/guide' || path === '/guide/') {
+          return env.ASSETS.fetch(new Request(new URL('/guide.html', url), request));
+        }
+        if (path === '/admin' || path === '/admin/') {
+          return env.ASSETS.fetch(new Request(new URL('/admin.html', url), request));
+        }
+        return env.ASSETS.fetch(request);
+      }
 
       return fail(404, 'not_found', '页面不存在');
     } catch (err) {
