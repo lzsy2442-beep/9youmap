@@ -75,28 +75,49 @@ async function runStatements(env, sql, label) {
   return errors;
 }
 
+// 老库补列：每个 isolate 启动时跑一次，成功的列名记下来，避免反复 ALTER
+const migratedColumns = new Set();
+async function migrateColumns(env) {
+  const wanted = [['bio_public', 'INTEGER DEFAULT 0']];
+  for (const [name, type] of wanted) {
+    if (migratedColumns.has(name)) continue;
+    // 先查列是否存在，存在就不 ALTER（D1 对重复 ALTER 会报错）
+    try {
+      const info = await env.DB.prepare('PRAGMA table_info(users)').all();
+      const cols = (info.results || []).map((c) => c.name);
+      if (cols.length && !cols.includes(name)) {
+        await env.DB.prepare(`ALTER TABLE users ADD COLUMN ${name} ${type}`).run();
+      }
+      migratedColumns.add(name);
+    } catch (err) {
+      console.error(`[db] 补列 ${name} 失败：`, err.message);
+    }
+  }
+}
+
 async function ensureSchema(env) {
   if (schemaReady) return;
+
+  let exists = true;
   try {
     await env.DB.prepare('SELECT 1 FROM users LIMIT 1').first();
-    schemaReady = true;
+  } catch {
+    exists = false;
+  }
+
+  if (!exists) {
+    const errs = await runStatements(env, SCHEMA_SQL, '建表');
+    if (errs.length) {
+      schemaError = errs.slice(0, 3).join(' ;; ');
+      return; // 建表失败就别继续了，下次请求再试
+    }
     schemaError = null;
-    return;
-  } catch { /* 表不存在，继续建 */ }
-
-  const errs = await runStatements(env, SCHEMA_SQL, '建表');
-  if (errs.length) {
-    schemaError = errs.slice(0, 3).join(' ;; ');
-    return; // 建表失败就别继续了，下次请求再试
-  }
-  schemaError = null;
-
-  // 轻量迁移：老库补上后加的列（幂等）
-  for (const [name, type] of [['bio_public', 'INTEGER DEFAULT 0']]) {
-    try { await env.DB.prepare(`ALTER TABLE users ADD COLUMN ${name} ${type}`).run(); } catch { /* 已存在 */ }
   }
 
-  if (env.AUTO_SEED === '1' && SEED_SQL) {
+  // 表新建或已存在，都要补一次后加的列（这段以前放在 early return 之后，永远跑不到）
+  await migrateColumns(env);
+
+  if (!exists && env.AUTO_SEED === '1' && SEED_SQL) {
     try {
       const markers = await env.DB.prepare('SELECT COUNT(*) AS n FROM markers').first();
       if (!markers || markers.n === 0) await runStatements(env, SEED_SQL, '示例数据');
