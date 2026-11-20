@@ -91,6 +91,11 @@ async function ensureSchema(env) {
   }
   schemaError = null;
 
+  // 轻量迁移：老库补上后加的列（幂等）
+  for (const [name, type] of [['bio_public', 'INTEGER DEFAULT 0']]) {
+    try { await env.DB.prepare(`ALTER TABLE users ADD COLUMN ${name} ${type}`).run(); } catch { /* 已存在 */ }
+  }
+
   if (env.AUTO_SEED === '1' && SEED_SQL) {
     try {
       const markers = await env.DB.prepare('SELECT COUNT(*) AS n FROM markers').first();
@@ -115,7 +120,7 @@ function rateLimit(req, key, max, windowMs) {
 function publicUser(u) {
   if (!u) return null;
   return {
-    id: u.id, nickname: u.nickname, avatar: u.avatar, bio: u.bio, favChar: u.fav_char,
+    id: u.id, nickname: u.nickname, avatar: u.avatar, bio: u.bio, bioPublic: !!u.bio_public, favChar: u.fav_char,
     serverKey: u.server_key, serverName: (SERVERS.find((s) => s.key === u.server_key) || {}).name || u.server_key,
     cityCode: u.city_code, cityName: u.city_name,
     regionLabel: u.city_code ? regionLabel(u.city_code) : '',
@@ -132,6 +137,7 @@ function publicMarker(m, viewer) {
     serverKey: m.server_key, serverName: server?.name || m.server_key,
     serverShort: server?.short || '?', serverColor: server?.color || '#B08A4F',
     uid: m.uid_public ? (m.uid_game || '') : '',
+    bio: m.bio_public ? (m.bio || '') : '',
     sameServer: viewer ? viewer.server_key === m.server_key : false,
     isMine: viewer ? viewer.id === m.user_id : false,
     createdAt: m.created_at
@@ -481,6 +487,7 @@ export default {
           patch.nickname = n;
         }
         if (b.bio !== undefined) patch.bio = String(b.bio).slice(0, 80);
+        if (b.bioPublic !== undefined) patch.bio_public = b.bioPublic ? 1 : 0;
         if (b.favChar !== undefined) patch.fav_char = String(b.favChar).slice(0, 20);
         if (b.uidGame !== undefined) patch.uid_game = String(b.uidGame).replace(/[^0-9]/g, '').slice(0, 12);
         if (b.uidPublic !== undefined) patch.uid_public = b.uidPublic ? 1 : 0;

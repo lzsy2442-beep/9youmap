@@ -416,7 +416,7 @@ function openLocationConsent(lat, lng) {
       <div class="consent-box">
         <label class="consent">
           <input type="checkbox" id="c-loc">
-          <span>我同意在公开地图上展示我选择的位置<em>坐标会模糊到约 500 米；可随时在「手提箱 → 隐私」里关闭</em></span>
+          <span>我同意在公开地图上展示我选择的位置<em>坐标会模糊到约 500 米；可随时在「箱子 → 隐私」里关闭</em></span>
         </label>
       </div>
       <p class="tip">不开启也能用：看地图、看天气、轻敲别人。只是不能落点。</p>
@@ -450,7 +450,7 @@ function openMarkerCard(m) {
     : `<dt>游戏 UID</dt><dd>${same ? '对方没有公开' : '不在同一渠道服，看不到'}</dd>`;
 
   openCard({
-    title: mine ? '这是你的标记' : '遇到一位司辰',
+    title: mine ? '这是您的标记' : '遇到一位司辰',
     body: `
       <div class="profile-top">
         <div class="profile-avatar">${esc((m.nickname || '?').slice(0, 1))}</div>
@@ -465,11 +465,12 @@ function openMarkerCard(m) {
           </div>
         </div>
       </div>
+      ${m.bio ? `<p class="profile-bio">“${esc(m.bio)}”</p>` : ''}
       <dl class="kv">
         <dt>坐标</dt><dd>${m.lat.toFixed(3)}, ${m.lng.toFixed(3)}<span class="near-sub">（约 500 米精度）</span></dd>
         ${uidLine}
       </dl>
-      ${same ? '' : `<p class="tip">你们在不同的渠道服（TA 在${esc(m.serverName)}）。可以轻敲打招呼，但**游戏里加不了好友**，悬着递伞按钮就是这个原因。</p>`}
+      ${same ? '' : `<p class="tip">您和 TA 在不同的渠道服（TA 在${esc(m.serverName)}）。可以轻敲打招呼，但**游戏里加不了好友**，悬着递伞按钮就是这个原因。</p>`}
       <p class="tip">只显示模糊后的坐标。请不要根据点位去推测他人的住址。</p>`,
     foot: mine
       ? `<button class="btn btn-danger" data-del>收回</button>`
@@ -489,7 +490,7 @@ function openMarkerCard(m) {
       } else {
         foot.querySelector('[data-knock]').onclick = () => doTouch(m, 'knock');
         const give = foot.querySelector('[data-give]');
-        if (give && !same) give.onclick = () => toast('你们不在一个服务器，游戏里加不了好友', 'warn');
+        if (give && !same) give.onclick = () => toast('您和 TA 不在一个服务器，游戏里加不了好友', 'warn');
         else if (give) give.onclick = () => doTouch(m, 'give');
         foot.querySelector('[data-report]').onclick = () => openReport(m);
       }
@@ -757,7 +758,7 @@ async function openLogin() {
   });
 }
 
-// ── 手提箱 ─────────────────────────────────────────────────
+// ── 箱子（我的） ───────────────────────────────────────────
 async function openCase() {
   if (!S.me) { openLogin(); return; }
   let data;
@@ -800,7 +801,7 @@ async function openCase() {
 
   openCard({
     wide: true,
-    title: '手提箱',
+    title: '箱子',
     body: `
       <p style="margin:0 0 8px"><a class="btn btn-small" href="/guide" target="_blank" rel="noopener">使用指南 →</a></p>
       ${['admin', 'site_admin'].includes(u.role)
@@ -828,7 +829,14 @@ async function openCase() {
         <span>本命角色 <em>可搜索，也可以不填</em></span>
         <div id="me-fav-picker"></div>
       </div>
-      <label class="field" style="margin-top:8px"><span>一句话签名</span><input id="me-bio" maxlength="80" value="${esc(u.bio || '')}" placeholder="想遇到什么样的同好"></label>
+      <label class="field" style="margin-top:8px">
+        <span>个性签名 <em>最多 80 字，可只对自己可见</em></span>
+        <input id="me-bio" maxlength="80" value="${esc(u.bio || '')}" placeholder="想遇到什么样的同好">
+      </label>
+      <label class="consent" style="margin-top:6px">
+        <input type="checkbox" id="me-bio-public" ${u.bioPublic ? 'checked' : ''}>
+        <span>公开个性签名<em>公开后所有访客都能在您的伞上看到，不限服务器</em></span>
+      </label>
       <div class="field-row" style="margin-top:8px">
         <label class="field grow"><span>游戏 UID <em>可选</em></span><input id="me-uid" maxlength="12" value="${esc(u.uid || '')}" placeholder="纯数字"></label>
         <label class="consent" style="align-items:center"><input type="checkbox" id="me-uid-public" ${u.uidPublic ? 'checked' : ''}><span>对同服公开</span></label>
@@ -845,7 +853,7 @@ async function openCase() {
         <label class="consent"><input type="checkbox" id="p-location" ${data.consent.state.location ? 'checked' : ''}><span>在公开地图展示我的位置</span></label>
         <label class="consent"><input type="checkbox" id="p-uid" ${data.consent.state.uid ? 'checked' : ''}><span>向同服用户展示我的 UID</span></label>
       </div>
-      <p class="tip">关掉位置展示后，你的标记会立刻从地图上消失（数据保留，可以再打开）。</p>`,
+      <p class="tip">关掉位置展示后，您的标记会立刻从地图上消失（数据保留，可以再打开）。</p>`,
     foot: `<button class="btn btn-ghost" data-logout>退出登录</button><button class="btn btn-primary" data-save>保存</button>`,
     onMount: (body, foot) => {
       const favPicker = mountCharPicker(body.querySelector('#me-fav-picker'), charGroups, u.favChar);
@@ -896,6 +904,7 @@ async function openCase() {
               nickname: body.querySelector('#me-nickname').value,
               favChar: favPicker.get(),
               bio: body.querySelector('#me-bio').value,
+              bioPublic: body.querySelector('#me-bio-public').checked,
               uidGame: body.querySelector('#me-uid').value,
               uidPublic: body.querySelector('#me-uid-public').checked,
               precision: body.querySelector('#me-precision').value
@@ -976,7 +985,7 @@ function markGuideSeen() {
   try { localStorage.setItem(GUIDE_SEEN_KEY, '1'); } catch { /* 隐私模式下忽略 */ }
 }
 
-/** 首次注册后强推；handbook=true 表示用户主动从手提箱打开 */
+/** 首次注册后强推；handbook=true 表示用户主动从「箱子」打开 */
 function openGuideWelcome({ force = false } = {}) {
   if (!force && guideSeen()) return;
   openCard({
@@ -989,7 +998,7 @@ function openGuideWelcome({ force = false } = {}) {
         <li><b>递伞</b>：互相递伞才会成为「同伞之交」，那时才能看到对方的游戏 UID，去游戏里加好友。</li>
       </ol>
       <p class="tip">为什么不能直接加好友？因为官服和渠道服不互通——所以我们只让您看到真加得上的人。</p>
-      <p class="tip">以后想再看：手提箱 →「使用指南」。</p>`,
+      <p class="tip">以后想再看：箱子 →「使用指南」。</p>`,
     foot: `<button class="btn btn-ghost" data-skip>跳过教程</button><button class="btn btn-primary" data-full>打开完整指南</button>`,
     onMount: (body, foot) => {
       foot.querySelector('[data-skip]').onclick = () => { markGuideSeen(); closeCard(); };

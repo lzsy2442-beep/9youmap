@@ -1,4 +1,4 @@
--- 9友地图 · D1 数据库结构
+﻿-- 9友地图 · D1 数据库结构
 -- 部署：npx wrangler d1 execute jiuyoumap --remote --file=worker/schema.sql
 -- 本地：npx wrangler d1 execute jiuyoumap --local --file=worker/schema.sql
 
@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS users (
   nickname TEXT NOT NULL,
   avatar TEXT DEFAULT 'umbrella',
   bio TEXT DEFAULT '',
+  bio_public INTEGER DEFAULT 0,
   fav_char TEXT DEFAULT '',
   server_key TEXT NOT NULL,
   city_code TEXT,

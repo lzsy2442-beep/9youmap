@@ -61,7 +61,7 @@ export function createStore(env) {
     async updateProfile(userId, patch) {
       const fields = [];
       const values = [];
-      for (const k of ['nickname', 'bio', 'fav_char', 'avatar', 'uid_game', 'uid_public', 'precision', 'city_code', 'city_name']) {
+      for (const k of ['nickname', 'bio', 'bio_public', 'fav_char', 'avatar', 'uid_game', 'uid_public', 'precision', 'city_code', 'city_name']) {
         if (patch[k] !== undefined) { fields.push(`${k} = ?`); values.push(patch[k]); }
       }
       if (!fields.length) return store.getUserById(userId);
@@ -90,7 +90,7 @@ export function createStore(env) {
 
     async listMarkers({ since = 0, limit = 5000 } = {}) {
       return all(`
-        SELECT m.*, u.nickname, u.server_key, u.fav_char, u.avatar, u.uid_game, u.uid_public,
+        SELECT m.*, u.nickname, u.server_key, u.fav_char, u.bio, u.bio_public, u.avatar, u.uid_game, u.uid_public,
                s.name AS server_name, s.short AS server_short, s.color AS server_color
         FROM markers m
         JOIN users u ON u.id = m.user_id
@@ -121,7 +121,7 @@ export function createStore(env) {
 
     async listAround(lat, lng, { radiusKm = 50, limit = 40 } = {}) {
       const rows = await all(`
-        SELECT m.*, u.nickname, u.server_key, u.fav_char, u.avatar, u.uid_game, u.uid_public,
+        SELECT m.*, u.nickname, u.server_key, u.fav_char, u.bio, u.bio_public, u.avatar, u.uid_game, u.uid_public,
                s.name AS server_name, s.short AS server_short, s.color AS server_color
         FROM markers m
         JOIN users u ON u.id = m.user_id
