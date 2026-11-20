@@ -349,8 +349,13 @@ button { font-family: inherit; color: inherit; }
 .overlay {
   position: fixed;
   inset: 0;
-  display: grid;
-  place-items: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* 卡片比视口高时（比如手机横屏、PC 小窗），让遮罩自己滚动，
+     否则底部按钮会被顶出屏幕，用户看不到「登录」在哪 */
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 20px;
   background: rgba(44, 36, 25, 0.4);
   backdrop-filter: blur(2px);
@@ -362,8 +367,10 @@ button { font-family: inherit; color: inherit; }
 .card {
   width: min(460px, 100%);
   max-height: min(84vh, 720px);
+  margin: auto;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
   background: var(--paper);
   border: 1px solid #B9A57E;
   border-radius: 4px;
@@ -388,7 +395,9 @@ button { font-family: inherit; color: inherit; }
   border-bottom: 1px solid var(--line);
 }
 .card-head h2 { margin: 0; font-size: 16px; font-weight: 600; letter-spacing: 1px; }
-.card-body { padding: 16px 18px; overflow-y: auto; }
+/* min-height:0 是关键：flex 子项默认不肯缩到内容高度以下，
+   缺了它卡片一旦超过 max-height 就会把底部按钮顶出屏幕（PC 登录就踩了这个坑） */
+.card-body { padding: 16px 18px; overflow-y: auto; min-height: 0; flex: 1 1 auto; }
 .card-foot {
   display: flex;
   gap: 8px;
