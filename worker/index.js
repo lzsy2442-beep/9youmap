@@ -10,6 +10,7 @@ import { LEGAL_TEXT, LEGAL_HASHES } from './data-legal.js';
 import { SCHEMA_SQL, SEED_SQL } from './data-schema.js';
 import { createStore } from './db.js';
 import { issueSession, readSession, clearCookie, hashCode, newCode } from './session.js';
+import { sendMailAliyun, aliyunMailConfigFromEnv } from './mail-aliyun.js';
 
 const json = (data, status = 200, headers = {}) => new Response(JSON.stringify(data), {
   status,
@@ -212,7 +213,15 @@ async function getWeather(store, cityCode, mock) {
 
 // ── 邮件：Workers 里没有 SMTP，走 HTTP 接口（Resend / 自建网关）──
 async function sendMail(env, to, code) {
-  const text = `你的验证码是 ${code}，5 分钟内有效。\n\n如果这不是你本人的操作，忽略这封邮件即可。\n\n—— ${SITE_NAME}（非官方同人项目）`;
+  const text = `您的验证码是 ${code}，5 分钟内有效。\n\n如果这不是您本人的操作，忽略这封邮件即可。\n\n—— ${SITE_NAME}（非官方同人项目）`;
+  const subject = `${SITE_NAME} · 登录验证码`;
+
+  // ① 阿里云邮件推送（境内，推荐）
+  const aliyun = aliyunMailConfigFromEnv(env);
+  if (aliyun) {
+    await sendMailAliyun({ ...aliyun, to, subject, text });
+    return { delivered: true, via: 'aliyun' };
+  }
 
   if (env.RESEND_API_KEY && env.MAIL_FROM) {
     const res = await fetch('https://api.resend.com/emails', {
@@ -606,6 +615,8 @@ ${renderMarkdown(md)}</article></div></body></html>`;
           hasAdminEmail: !!(env.ADMIN_EMAIL && env.ADMIN_EMAIL.includes('@')),
           hasMailFrom: !!env.MAIL_FROM,
           hasResend: !!env.RESEND_API_KEY,
+          hasAliyunDM: !!(env.ALIYUN_DM_AK_ID && env.ALIYUN_DM_AK_SECRET),
+          mailAccount: env.ALIYUN_DM_ACCOUNT || env.MAIL_FROM || '',
           sessionSecretIsDefault: !env.SESSION_SECRET || env.SESSION_SECRET === 'dev-secret-change-me'
         });
       }
