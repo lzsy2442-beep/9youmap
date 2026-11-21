@@ -26,7 +26,8 @@
     "TDT_TK": "fe66986378af3f8ecbe276808919c8b9",
     "ADMIN_EMAIL": "suyu060416@foxmail.com",
     "MAIL_FROM": "9友地图 <no-reply@jiyoumap.top>",
-    "ALIYUN_DM_ACCOUNT": "no-reply@jiyoumap.top"
+    "ALIYUN_DM_ACCOUNT": "no-reply@jiyoumap.top",
+    "ALIYUN_DM_AK_ID": "LTAI5t8BY4q42cXRCkdwyMvU"
   },
 
   "observability": { "enabled": true }
