@@ -27,7 +27,8 @@
     "ADMIN_EMAIL": "suyu060416@foxmail.com",
     "MAIL_FROM": "9友地图 <no-reply@jiyoumap.top>",
     "ALIYUN_DM_ACCOUNT": "no-reply@jiyoumap.top",
-    "ALIYUN_DM_AK_ID": "LTAI5t8BY4q42cXRCkdwyMvU"
+    "ALIYUN_DM_AK_ID": "LTAI5t8BY4q42cXRCkdwyMvU",
+    "TEST_EMAILS": "suyu060416@foxmail.com,1592514917@qq.com,18994204416@163.com,lzsy2442@gmail.com"
   },
 
   "observability": { "enabled": true }
