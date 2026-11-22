@@ -39,7 +39,7 @@ export class PaperMap {
     this.canvas = canvas;
     this.ctx = canvas.getContext('2d');
     this.center = opts.center || { lat: 34.2, lng: 108.9 };
-    this.zoom = opts.zoom ?? 4;
+    this.zoom = (opts.zoom === null || opts.zoom === undefined) ? 4 : opts.zoom;
     this.targetZoom = this.zoom;
     this.markers = [];
     this.cities = opts.cities || [];
@@ -470,7 +470,7 @@ export class PaperMap {
     const isMe = m.isMine;
     const same = m.sameServer;
     const sel = this.selected === m.id;
-    const hovered = this.hover?.type === 'marker' && this.hover.marker.id === m.id;
+    const hovered = !!(this.hover && this.hover.type === 'marker' && this.hover.marker.id === m.id);
 
     ctx.save();
     ctx.translate(x, y);

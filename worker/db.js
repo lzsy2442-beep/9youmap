@@ -298,9 +298,9 @@ export function createStore(env) {
     },
 
     // ── 举报 ──────────────────────────────────────────────
-    async addReport({ targetType, targetId, reason, fromUser }) {
-      await run('INSERT INTO reports (target_type,target_id,reason,from_user,created_at) VALUES (?,?,?,?,?)',
-        targetType, targetId, reason, fromUser || '', now());
+    async addReport({ targetType, targetId, reason, detail, fromUser }) {
+      await run('INSERT INTO reports (target_type,target_id,reason,detail,from_user,created_at) VALUES (?,?,?,?,?,?)',
+        targetType, targetId, reason, detail || '', fromUser || '', now());
     },
 
     // ── 公告 ──────────────────────────────────────────────
@@ -453,6 +453,42 @@ export function createStore(env) {
 
     async countAdmins() {
       return (await first("SELECT COUNT(*) AS n FROM users WHERE role IN ('admin','site_admin')")).n;
+    },
+
+    // ── 图片 ──────────────────────────────────────────────
+    async saveMedia({ id, mime, data, size }) {
+      await run('INSERT INTO media (id, mime, data, size, created_at) VALUES (?, ?, ?, ?, ?)',
+        id, mime, data, size, now());
+    },
+
+    async getMedia(id) {
+      return await first('SELECT id, mime, data FROM media WHERE id = ?', id);
+    },
+
+    // ── 站点设置 ──────────────────────────────────────────
+    async getSetting(key) {
+      const row = await first('SELECT value FROM settings WHERE key = ?', key);
+      return row ? row.value : null;
+    },
+
+    async setSetting(key, value) {
+      await run(`
+        INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+      `, key, String(value ?? ''), now());
+    },
+
+    async readWhitelist() {
+      const raw = (await store.getSetting('test_emails')) || '';
+      return String(raw).split(/[,;\s]+/).map((s) => s.trim().toLowerCase()).filter((s) => s.includes('@'));
+    },
+
+    async writeWhitelist(raw) {
+      const list = String(raw || '')
+        .split(/[,;\s]+/).map((s) => s.trim().toLowerCase())
+        .filter((s) => /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(s));
+      await store.setSetting('test_emails', list.join('\n'));
+      return list;
     },
 
     SERVER_MAP

@@ -79,6 +79,34 @@ async function runStatements(env, sql, label) {
 // 老库补列：每个 isolate 启动时跑一次，成功的列名记下来，避免反复 ALTER
 const migratedColumns = new Set();
 async function migrateColumns(env) {
+  // 老库补建后加的表（幂等）
+  try {
+    await env.DB.prepare(`CREATE TABLE IF NOT EXISTS settings (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL,
+      updated_at TEXT
+    )`).run();
+  } catch (err) {
+    console.error('[db] 建 settings 表失败：', err.message);
+  }
+
+  try {
+    await env.DB.prepare(`CREATE TABLE IF NOT EXISTS media (
+      id TEXT PRIMARY KEY,
+      mime TEXT NOT NULL,
+      data TEXT NOT NULL,
+      size INTEGER NOT NULL,
+      created_at TEXT NOT NULL
+    )`).run();
+    const rinfo = await env.DB.prepare('PRAGMA table_info(reports)').all();
+    const rcols = (rinfo.results || []).map((c) => c.name);
+    if (rcols.length && !rcols.includes('detail')) {
+      await env.DB.prepare("ALTER TABLE reports ADD COLUMN detail TEXT DEFAULT ''").run();
+    }
+  } catch (err) {
+    console.error('[db] 建 media 表失败：', err.message);
+  }
+
   const wanted = [['bio_public', 'INTEGER DEFAULT 0']];
   for (const [name, type] of wanted) {
     if (migratedColumns.has(name)) continue;
@@ -94,6 +122,13 @@ async function migrateColumns(env) {
       console.error(`[db] 补列 ${name} 失败：`, err.message);
     }
   }
+}
+
+function base64ToBytes(b64) {
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
 }
 
 async function ensureSchema(env) {
@@ -407,12 +442,12 @@ export default {
         const code = newCode();
         await store.setCode(email, await hashCode(secret, email, code), LIMITS.codeTtlSec);
 
-        // 临时测试白名单：域名未就绪时，对指定邮箱跳过真实发信，直接返回验证码。
-        // 用环境变量 TEST_EMAILS 控制（逗号分隔），不设置就等于关闭。
-        const testList = String(env.TEST_EMAILS || '')
+        // 测试白名单：数据库优先，环境变量兜底。命中则不发邮件，直接把码返回给前端。
+        const envWhite = String(env.TEST_EMAILS || '')
           .split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
-        if (testList.includes(email)) {
-          console.log(`[mail:test] ${email} 命中测试白名单，未发送邮件`);
+        const dbWhite = await store.readWhitelist();
+        if (dbWhite.includes(email) || envWhite.includes(email)) {
+          console.log(`[mail:test] ${email} 命中白名单，未发送邮件`);
           return json({ ok: true, delivered: false, devCode: code, ttl: LIMITS.codeTtlSec, testMode: true });
         }
 
@@ -553,7 +588,8 @@ export default {
         await store.addReport({
           targetType: String(b.targetType || 'marker'),
           targetId: String(b.targetId || ''),
-          reason: String(b.reason || '').slice(0, 500),
+          reason: String(b.reason || '').slice(0, 60),
+          detail: String(b.detail || '').slice(0, 500),
           fromUser: viewer ? viewer.id : ''
         });
         return json({ ok: true });
@@ -622,6 +658,19 @@ ${renderMarkdown(md)}</article></div></body></html>`;
       }
 
       // ── 管理后台 ───────────────────────────────────────
+      // ── 图片读取（公开，不要求登录）─────────────────────
+      if (path.startsWith('/api/media/') && method === 'GET') {
+        const id = path.slice('/api/media/'.length);
+        const row = await store.getMedia(id);
+        if (!row) return new Response('not found', { status: 404 });
+        return new Response(base64ToBytes(row.data), {
+          headers: {
+            'content-type': row.mime,
+            'cache-control': 'public, max-age=31536000, immutable'
+          }
+        });
+      }
+
       if (path.startsWith('/api/admin/')) {
         if (!viewer) return fail(401, 'unauthorized', '请先登录');
         const isAdmin = viewer.role === 'admin' || viewer.role === 'site_admin';
@@ -689,6 +738,35 @@ ${renderMarkdown(md)}</article></div></body></html>`;
           const u = await store.adminSetUser(mUser[1], b);
           if (!u) return fail(400, 'bad_request', '没有可更新的字段');
           return json({ ok: true, user: u });
+        }
+
+
+        if (path === '/api/admin/media' && method === 'POST') {
+          const b = await body();
+          const dataUrl = String(b.dataUrl || '');
+          const m = /^data:(image\/[a-z+]+);base64,(.+)$/i.exec(dataUrl);
+          if (!m) return fail(400, 'bad_image', '图片格式不对');
+          const mime = m[1].toLowerCase();
+          if (!['image/jpeg', 'image/png', 'image/webp', 'image/gif'].includes(mime)) {
+            return fail(400, 'bad_type', '只支持 JPG / PNG / WebP / GIF');
+          }
+          const b64 = m[2];
+          if (b64.length > 900 * 1024) return fail(413, 'too_big', '图片太大，请压缩后重试');
+          const id = crypto.randomUUID().replace(/-/g, '').slice(0, 16);
+          await store.saveMedia({ id, mime, data: b64, size: Math.floor(b64.length * 0.75) });
+          return json({ ok: true, url: `/api/media/${id}` });
+        }
+
+        if (path === '/api/admin/whitelist' && method === 'GET') {
+          const emails = await store.readWhitelist();
+          const envEmails = String(env.TEST_EMAILS || '')
+            .split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
+          return json({ ok: true, emails, envEmails, raw: (await store.getSetting('test_emails')) || '' });
+        }
+        if (path === '/api/admin/whitelist' && method === 'PUT') {
+          const b = await body();
+          const list = await store.writeWhitelist(b.raw || '');
+          return json({ ok: true, emails: list, count: list.length });
         }
 
         if (path === '/api/admin/markers' && method === 'GET') {

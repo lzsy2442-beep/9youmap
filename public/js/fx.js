@@ -47,7 +47,7 @@ export function createWeatherFx(canvas) {
   try {
     const mq = window.matchMedia('(prefers-reduced-motion: reduce)');
     reduce = mq.matches;
-    mq.addEventListener?.('change', (e) => { reduce = e.matches; applyMode(); });
+    if (mq.addEventListener) mq.addEventListener('change', (e) => { reduce = e.matches; applyMode(); });
   } catch { /* 忽略 */ }
 
   function resize() {

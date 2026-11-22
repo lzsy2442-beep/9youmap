@@ -1,6 +1,7 @@
 ﻿// 管理台：概览 / 公告 / 用户 / 标记 / 举报
 const $ = (sel, root = document) => root.querySelector(sel);
-const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const nz = (v, d) => (v === null || v === undefined ? d : v);
+const esc = (s) => String(nz(s, '')).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const fmtDate = (iso) => {
   if (!iso) return '—';
   const d = new Date(iso);
@@ -12,7 +13,7 @@ const fmtDate = (iso) => {
 const ROLE_LABEL = { site_admin: '站长', admin: '管理员', user: '普通' };
 
 // 与后端一致的权限边界：只有站长能调整角色；站长账号任何人都不能处置
-const viewerIsOwner = () => state.me?.user?.role === 'site_admin';
+const viewerIsOwner = () => !!(state.me && state.me.user && state.me.user.role === 'site_admin');
 const canChangeRole = (u) => viewerIsOwner() && u.role !== 'site_admin';
 const canBan = (u) => u.role !== 'site_admin' && (viewerIsOwner() || u.role !== 'admin');
 const roleLabel = (r) => ROLE_LABEL[r] || r;
@@ -29,7 +30,7 @@ async function api(path, { method = 'GET', body } = {}) {
   let data = null;
   try { data = await res.json(); } catch { /* 非 JSON */ }
   if (!res.ok || (data && data.ok === false)) {
-    const err = data?.error || {};
+    const err = (data && data.error) || {};
     const e = new Error(err.message || `请求失败（${res.status}）`);
     e.code = err.code;
     e.status = res.status;
@@ -85,6 +86,7 @@ function switchTab(tab) {
   if (tab === 'users') loadUsers();
   if (tab === 'markers') loadMarkers();
   if (tab === 'reports') loadReports();
+  if (tab === 'whitelist') loadWhitelist();
 }
 
 // ── 概览 ───────────────────────────────────────────────────
@@ -149,7 +151,15 @@ async function loadNotices() {
     <h2 class="admin-h2">发一条新公告</h2>
     <form class="admin-form" id="notice-form">
       <label>标题<input name="title" maxlength="60" placeholder="例如：维护通知" required></label>
-      <label>正文<textarea name="body" maxlength="2000" placeholder="支持换行，最多 2000 字" required></textarea></label>
+      <label>正文
+        <textarea name="body" id="notice-body" rows="12" maxlength="2000"
+          placeholder="支持换行，最多 2000 字。图片用「插入图片」按钮，会在光标处插入占位符。" required></textarea>
+      </label>
+      <div class="admin-actions" style="margin:-6px 0 10px">
+        <button type="button" class="admin-btn small ghost" id="notice-img-btn">插入图片</button>
+        <span class="admin-hint" style="margin:0">支持 JPG / PNG / WebP，会自动压缩到 1200px 以内</span>
+        <input type="file" id="notice-img-file" accept="image/*" hidden>
+      </div>
       <div class="row">
         <label>级别
           <select name="level">
@@ -184,6 +194,29 @@ async function loadNotices() {
         </tbody>
       </table>
     </div>`;
+
+  // 插入图片
+  $('#notice-img-btn').onclick = () => $('#notice-img-file').click();
+  $('#notice-img-file').onchange = async (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    const btn = $('#notice-img-btn');
+    btn.disabled = true;
+    const oldText = btn.textContent;
+    btn.textContent = '上传中…';
+    try {
+      const dataUrl = await shrinkImage(file, 1200, 0.82);
+      const r = await api('/api/admin/media', { method: 'POST', body: { dataUrl } });
+      insertAtCursor($('#notice-body'), '[[img:' + r.url.split('/').pop() + ']]');
+      toast('图片已插入', 'ok');
+    } catch (err) {
+      toast(err.message, 'warn');
+    } finally {
+      btn.disabled = false;
+      btn.textContent = oldText;
+      e.target.value = '';
+    }
+  };
 
   $('#notice-form').onsubmit = async (e) => {
     e.preventDefault();
@@ -366,7 +399,7 @@ async function loadReports() {
               <td>${fmtDate(r.created_at)}</td>
               <td>${who}${r.target_server_name ? `<br><span class="muted">${esc(r.target_server_name)}</span>` : ''}</td>
               <td class="wrap">${spot}</td>
-              <td class="wrap">${esc(r.reason || '—')}</td>
+              <td class="wrap">${esc(r.reason || '—')}${r.detail ? `<br><span class="muted">补充：${esc(r.detail)}</span>` : ''}</td>
               <td>${esc(r.reporter || '游客')}</td>
               <td>${statusTag(r.status)}</td>
               <td>
@@ -492,3 +525,53 @@ async function openUserPanel(userId) {
   });
 }
 boot();
+
+// ── 图片压缩与光标插入 ─────────────────────────────────────
+function shrinkImage(file, maxSide, quality) {
+  return new Promise((resolve, reject) => {
+    if (!/^image\//.test(file.type)) return reject(new Error('请选图片文件'));
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('读取失败'));
+    reader.onload = () => {
+      const img = new Image();
+      img.onerror = () => reject(new Error('图片有问题，换一张试试'));
+      img.onload = () => {
+        let w = img.naturalWidth;
+        let h = img.naturalHeight;
+        const scale = Math.min(1, maxSide / Math.max(w, h));
+        w = Math.round(w * scale);
+        h = Math.round(h * scale);
+        const canvas = document.createElement('canvas');
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, w, h);
+        ctx.drawImage(img, 0, 0, w, h);
+        let out = canvas.toDataURL('image/jpeg', quality);
+        // 超过 ~700KB 就继续降质
+        let q = quality;
+        while (out.length > 700 * 1024 && q > 0.4) {
+          q -= 0.12;
+          out = canvas.toDataURL('image/jpeg', q);
+        }
+        if (out.length > 700 * 1024) {
+          return reject(new Error('图片太大，换小一点的'));
+        }
+        resolve(out);
+      };
+      img.src = reader.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+function insertAtCursor(el, text) {
+  const start = el.selectionStart || 0;
+  const end = el.selectionEnd || 0;
+  const v = el.value;
+  el.value = v.slice(0, start) + text + v.slice(end);
+  const pos = start + text.length;
+  el.setSelectionRange(pos, pos);
+  el.focus();
+}

@@ -75,6 +75,12 @@ CREATE TABLE IF NOT EXISTS codes (
   sent_at INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL,
+  updated_at TEXT
+);
+
 CREATE TABLE IF NOT EXISTS weather_cache (
   city_code TEXT PRIMARY KEY,
   payload TEXT NOT NULL,
@@ -91,9 +97,17 @@ CREATE TABLE IF NOT EXISTS notices (
   expires_at TEXT
 );
 
+CREATE TABLE IF NOT EXISTS media (
+  id TEXT PRIMARY KEY,
+  mime TEXT NOT NULL,
+  data TEXT NOT NULL,
+  size INTEGER NOT NULL,
+  created_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS reports (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  target_type TEXT, target_id TEXT, reason TEXT,
+  target_type TEXT, target_id TEXT, reason TEXT, detail TEXT DEFAULT '',
   from_user TEXT, status TEXT DEFAULT 'open', created_at TEXT
 );
 

@@ -1179,3 +1179,27 @@ body.no-grain .paper-grain { display: none; }
   60% { background: rgba(140, 59, 43, 0.06); box-shadow: 0 0 0 2px rgba(140, 59, 43, 0.2); }
 }
 .consent-box.flash { animation: consentFlash 0.9s ease 2; border-radius: 3px; }
+
+/* 公告配图 */
+.notice-img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 10px 0 4px;
+  border-radius: 8px;
+  border: 1px solid rgba(176, 138, 79, 0.35);
+}
+
+/* 举报弹窗里的补充说明 */
+#report-detail {
+  width: 100%;
+  min-height: 76px;
+  resize: vertical;
+  line-height: 1.6;
+}
+
+.field .opt {
+  font-weight: 400;
+  opacity: 0.62;
+  font-size: 0.86em;
+}

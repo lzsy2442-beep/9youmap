@@ -3,7 +3,10 @@ import { createWeatherFx } from './fx.js';
 
 const $ = (sel) => document.querySelector(sel);
 const isNarrow = () => window.innerWidth <= 720;
-const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+// 兼容旧内核（华为浏览器等 Chromium<80）：不使用 ?. 与 ??
+const nz = (v, d) => (v === null || v === undefined ? d : v);
+const legalDocs = (site) => (site && site.legal && site.legal.docs) || [];
+const esc = (s) => String(nz(s, '')).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 const S = {
   site: null,
@@ -40,7 +43,7 @@ async function api(path, { method = 'GET', body } = {}) {
   let data = null;
   try { data = await res.json(); } catch { /* 可能是 HTML */ }
   if (!res.ok || (data && data.ok === false)) {
-    const err = data?.error || {};
+    const err = (data && data.error) || {};
     const e = new Error(err.message || `请求失败（${res.status}）`);
     e.code = err.code;
     e.status = res.status;
@@ -112,8 +115,8 @@ async function boot() {
   S.cities = boot.cities;
   S.stats = boot.stats;
   S.me = boot.me;
-  S.consent = boot.me?.consent || null;
-  S.cityCode = S.me?.cityCode || '110000';
+  S.consent = (boot.me && boot.me.consent) || null;
+  S.cityCode = (S.me && S.me.cityCode) || '110000';
 
   S.settings = loadSettings();
   initMap();
@@ -133,7 +136,7 @@ async function boot() {
 }
 
 function initMap() {
-  const tk = S.site?.tdtTk || '';
+  const tk = (S.site && S.site.tdtTk) || '';
   const map = new PaperMap($('#map'), {
     cities: S.cities,
     center: { lat: 34.2, lng: 108.9 },
@@ -190,7 +193,7 @@ function renderAuthState() {
   $('#btn-login').textContent = logged ? '我的' : '登录';
   $('#btn-login').dataset.logged = logged ? '1' : '0';
   $('#btn-place').textContent = logged
-    ? (S.consent?.state?.location ? '在地图上撑伞' : '开启位置展示')
+    ? ((S.consent && S.consent.state && S.consent.state.location) ? '在地图上撑伞' : '开启位置展示')
     : '撑起你的伞';
 }
 
@@ -235,14 +238,14 @@ function connectStream() {
 function updateWeatherChip() {
   const w = S.weather;
   const narrow = isNarrow();
-  const label = w?.regionLabel || w?.cityName || '';
+  const label = (w && (w.regionLabel || w.cityName)) || '';
 
   if (!w || !w.ok) {
     $('#weather-text').textContent = narrow ? '天气不可用' : `${label || '天气'} · 不可用`;
     $('#weather-dot').style.background = 'var(--fog)';
     document.body.dataset.weather = 'clear';
     delete document.body.dataset.night;
-    S.fx?.set('off');
+    if (S.fx) S.fx.set('off');
     return;
   }
 
@@ -255,7 +258,7 @@ function updateWeatherChip() {
   $('#weather-dot').style.background = colors[w.kind] || 'var(--brass)';
   document.body.dataset.weather = w.kind || 'clear';
   document.body.dataset.night = w.isDay ? '0' : '1';
-  S.fx?.set(w.kind || 'off');
+  if (S.fx) S.fx.set(w.kind || 'off');
 }
 async function loadWeather(cityCode, mock = '') {
   try {
@@ -273,7 +276,7 @@ async function loadWeather(cityCode, mock = '') {
 let stormEggShown = false;
 function maybeStormEgg() {
   if (stormEggShown) return;
-  if (S.weather?.ok && S.weather.kind === 'storm') {
+  if (S.weather && S.weather.ok && S.weather.kind === 'storm') {
     stormEggShown = true;
     setTimeout(() => {
       openCard({
@@ -356,7 +359,7 @@ function onMapClick(lat, lng) {
     openLogin();
     return;
   }
-  if (!S.consent?.state?.location) {
+  if (!(S.consent && S.consent.state && S.consent.state.location)) {
     openLocationConsent(lat, lng);
     return;
   }
@@ -408,7 +411,7 @@ function openPlaceCard(lat, lng) {
 }
 
 function openLocationConsent(lat, lng) {
-  const doc = S.site?.legal?.docs?.find((d) => d.type === 'privacy');
+  const doc = legalDocs(S.site).find((d) => d.type === 'privacy');
   openCard({
     title: '还需要你单独同意一件事',
     body: `
@@ -420,7 +423,7 @@ function openLocationConsent(lat, lng) {
         </label>
       </div>
       <p class="tip">不开启也能用：看地图、看天气、轻敲别人。只是不能落点。</p>
-      <p class="form-fine">当前隐私政策版本 ${esc(doc?.hash || '')}</p>`,
+      <p class="form-fine">当前隐私政策版本 ${esc((doc && doc.hash) || '')}</p>`,
     foot: `<button class="btn btn-ghost" data-cancel>先不</button><button class="btn btn-primary" data-ok disabled>同意并继续</button>`,
     onMount: (body, foot) => {
       const cb = body.querySelector('#c-loc');
@@ -479,7 +482,7 @@ function openMarkerCard(m) {
          <button class="btn btn-ghost" data-report>举报</button>`,
     onMount: (body, foot) => {
       const copyBtn = body.querySelector('#copy-uid');
-      if (copyBtn) copyBtn.onclick = (e) => { e.preventDefault(); navigator.clipboard?.writeText(m.uid); toast('复制好了', 'ok'); };
+      if (copyBtn) copyBtn.onclick = (e) => { e.preventDefault(); navigator.clipboard && navigator.clipboard.writeText(m.uid); toast('复制好了', 'ok'); };
       if (mine) {
         foot.querySelector('[data-del]').onclick = async () => {
           try {
@@ -514,18 +517,39 @@ function openReport(m) {
       <label class="field"><span>原因</span>
         <select id="report-reason">
           <option>发布了他人隐私 / 开盒</option>
+          <option>位置可疑（疑似住址 / 精确到门牌）</option>
           <option>广告或诈骗</option>
           <option>辱骂或引战</option>
-          <option>位置可疑（疑似住址）</option>
-          <option>其他</option>
-        </select></label>`,
+          <option>不是司辰，与游戏无关的内容</option>
+          <option>重复发布 / 刷屏</option>
+          <option>冒充他人 / 冒充官方</option>
+          <option>头像或签名不合规</option>
+          <option>其他（请在下面说明）</option>
+        </select></label>
+      <label class="field"><span>补充说明<span class="opt">（选「其他」时必填）</span></span>
+        <textarea id="report-detail" maxlength="500" rows="3" placeholder="简单说一下情况，方便我们判断"></textarea></label>
+      <p class="form-fine">还可以写清楚：什么时候看到的、对方昵称、具体哪里有问题。</p>`,
     foot: `<button class="btn btn-ghost" data-cancel>算了</button><button class="btn btn-danger" data-ok>提交</button>`,
     onMount: (body, foot) => {
       foot.querySelector('[data-cancel]').onclick = closeCard;
       foot.querySelector('[data-ok]').onclick = async () => {
-        await api('/api/report', { method: 'POST', body: { targetType: 'marker', targetId: m.id, reason: body.querySelector('#report-reason').value } });
-        closeCard();
-        toast('举报收到了，站长会尽快处理', 'ok');
+        const reason = body.querySelector('#report-reason').value;
+        const detail = body.querySelector('#report-detail').value.trim();
+        if (reason.indexOf('其他') >= 0 && !detail) {
+          toast('选「其他」时请简单说明一下情况', 'warn');
+          body.querySelector('#report-detail').focus();
+          return;
+        }
+        try {
+          await api('/api/report', {
+            method: 'POST',
+            body: { targetType: 'marker', targetId: m.id, reason, detail }
+          });
+          closeCard();
+          toast('举报收到了，站长会尽快处理', 'ok');
+        } catch (err) {
+          toast(err.message, 'warn');
+        }
       };
     }
   });
@@ -585,12 +609,12 @@ function mountRegionPicker(root, tree, initialCode) {
     const p = tree.find((x) => x.code === selP.value);
     const c = p ? (p.children || []).find((x) => x.code === selC.value) : null;
     const d = c ? (c.children || []).find((x) => x.code === selD.value) : null;
-    hidden.value = d?.code || c?.code || p?.code || '';
+    hidden.value = (d && d.code) || (c && c.code) || (p && p.code) || '';
   };
 
   selP.onchange = () => {
     const p = tree.find((x) => x.code === selP.value);
-    fill(selC, p?.children || [], MUNI.has(selP.value) ? '区 / 县' : '市 / 地区');
+    fill(selC, (p && p.children) || [], MUNI.has(selP.value) ? '区 / 县' : '市 / 地区');
     fill(selD, [], '区县');
     selC.value = '';
     selD.value = '';
@@ -599,7 +623,7 @@ function mountRegionPicker(root, tree, initialCode) {
   selC.onchange = () => {
     const p = tree.find((x) => x.code === selP.value);
     const c = p ? (p.children || []).find((x) => x.code === selC.value) : null;
-    fill(selD, c?.children || [], '区县（可选）');
+    fill(selD, (c && c.children) || [], '区县（可选）');
     selD.value = '';
     sync();
   };
@@ -1013,10 +1037,10 @@ function openGuideWelcome({ force = false } = {}) {
 
 // ── 条款 ───────────────────────────────────────────────────
 function openLegal() {
-  const docs = S.site?.legal?.docs || [];
+  const docs = legalDocs(S.site);
   openCard({
     title: '条款与文件',
-    body: `<p class="form-hint">版本 ${esc(S.site?.legal?.version || '')}。每份文件的文本校验码是留痕用的，条款更新后会要求重新同意。</p>
+    body: `<p class="form-hint">版本 ${esc((S.site && S.site.legal && S.site.legal.version) || '')}。每份文件的文本校验码是留痕用的，条款更新后会要求重新同意。</p>
       <ul class="near-list" style="max-height:320px">
         ${docs.map((d) => `<li class="near-item"><span class="near-main">
           <span class="near-name">${esc(d.title)}</span>
@@ -1033,7 +1057,7 @@ async function openWeatherCard() {
   let tree;
   try { tree = await getRegionTree(); } catch { toast('地区数据没加载出来，稍后再试', 'warn'); return; }
 
-  const current = S.weather?.ok
+  const current = S.weather && S.weather.ok
     ? `${S.weather.regionLabel || S.weather.cityName} · ${S.weather.text} ${S.weather.temp}°`
     : '暂时取不到天气';
 
@@ -1176,9 +1200,11 @@ function applySettings() {
   document.documentElement.dataset.font = s.font;
   document.body.classList.toggle('no-grain', !s.grain);
   document.body.dataset.reduceMotion = s.reduceMotion ? '1' : '0';
-  S.map?.setOptions({
-    labels: s.labels, rabbits: s.rabbits, sameOnly: s.sameOnly
-  });
+  if (S.map) {
+    S.map.setOptions({
+      labels: s.labels, rabbits: s.rabbits, sameOnly: s.sameOnly
+    });
+  }
 }
 
 function openSettings() {
@@ -1260,6 +1286,15 @@ async function refreshNoticeDot() {
   } catch { /* 静默 */ }
 }
 
+/** 公告正文：先转义，再把 [[img:ID]] 换成图片 */
+function renderNoticeBody(raw) {
+  return esc(raw)
+    .replace(/\n/g, '<br>')
+    .replace(/\[\[img:([a-f0-9]{6,32})\]\]/g, function (_, id) {
+      return '<img class="notice-img" src="/api/media/' + id + '" loading="lazy" alt="">';
+    });
+}
+
 async function openNotices() {
   let notices = [];
   try {
@@ -1280,7 +1315,7 @@ async function openNotices() {
             ${n.pinned ? '<em class="pin">置顶</em>' : ''}
             <time>${fmt(n.created_at)}</time>
           </div>
-          <p>${esc(n.body).replace(/\n/g, '<br>')}</p>
+          <p>${renderNoticeBody(n.body)}</p>
         </article>`).join('')}</div>`
     : `<p class="profile-bio">还没有公告。</p>`;
 
@@ -1301,7 +1336,7 @@ async function openNotices() {
 $('#btn-login').onclick = () => { S.me ? openCase() : openLogin(); };
 $('#btn-place').onclick = () => {
   if (!S.me) return openLogin();
-  if (!S.consent?.state?.location) {
+  if (!(S.consent && S.consent.state && S.consent.state.location)) {
     const v = S.map.getView();
     return openLocationConsent(v.center.lat, v.center.lng);
   }
@@ -1320,7 +1355,7 @@ document.querySelectorAll('[data-zoom]').forEach((b) => {
   };
 });
 $('#btn-basemap').onclick = () => {
-  toast(S.site?.tdtTk ? '当前是天地图底图。未配置 Key 时会用纸面底图。' : '未配置天地图 Key，当前是纸面底图（不展示行政边界）');
+  toast((S.site && S.site.tdtTk) ? '当前是天地图底图。未配置 Key 时会用纸面底图。' : '未配置天地图 Key，当前是纸面底图（不展示行政边界）');
 };
 
 // 面板入口统一兜底：异步函数抛错时给出提示，而不是静默没反应
@@ -1337,7 +1372,7 @@ document.querySelectorAll('.rail-item').forEach((b) => {
   b.onclick = () => {
     document.querySelectorAll('.rail-item').forEach((x) => x.classList.toggle('on', x === b));
     const act = b.dataset.act;
-    if (act === 'map') { showPanel(false); closeCard(); S.map?.resetView(); }
+    if (act === 'map') { showPanel(false); closeCard(); if (S.map) S.map.resetView(); }
     if (act === 'radar') runAction(() => openPanel('暴雨雷达'));
     if (act === 'notices') runAction(openNotices);
     if (act === 'case') runAction(openCase);

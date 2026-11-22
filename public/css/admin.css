@@ -240,3 +240,11 @@ table.admin-table td.wrap { white-space: normal; min-width: 240px; max-width: 42
   .admin-modal-card { max-height: 92dvh; padding: 14px; }
   .admin-kv { grid-template-columns: 64px 1fr; font-size: 12.5px; }
 }
+
+/* 公告正文编辑框：加高、可拖拽 */
+#notice-body {
+  min-height: 260px;
+  resize: vertical;
+  line-height: 1.7;
+  font-size: 14px;
+}
