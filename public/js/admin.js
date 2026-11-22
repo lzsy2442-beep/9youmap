@@ -524,54 +524,60 @@ async function openUserPanel(userId) {
     };
   });
 }
+// ── 测试白名单 ─────────────────────────────────────────────
+async function loadWhitelist() {
+  let d;
+  try {
+    d = await api('/api/admin/whitelist');
+  } catch (err) {
+    $('#admin-main').innerHTML = `<h2 class="admin-h2">白名单</h2>
+      <p class="admin-hint">读取失败：${esc(err.message)}</p>
+      <p class="admin-hint">如果是 404，说明服务端还是旧版本，等部署完成后再试。</p>`;
+    return;
+  }
+  const envCount = (d.envEmails || []).length;
+  $('#admin-main').innerHTML = `
+    <h2 class="admin-h2">测试白名单</h2>
+    <p class="admin-hint">
+      白名单里的邮箱<strong>不会真的收到邮件</strong>，验证码会直接显示在登录框里。
+      一行一个邮箱，保存后<strong>立即生效</strong>，不需要重新部署。
+    </p>
+    <div class="admin-actions" style="margin-bottom:12px">
+      <span class="tag role">${d.emails.length} 个邮箱</span>
+      ${envCount ? `<span class="tag warn">另有 ${envCount} 个来自环境变量 TEST_EMAILS</span>` : ''}
+    </div>
+    <div class="admin-form">
+      <textarea id="wl-input" rows="14" spellcheck="false"
+        placeholder="one@example.com&#10;two@example.com">${esc(d.raw || (d.emails || []).join('\n'))}</textarea>
+    </div>
+    <div class="admin-actions" style="margin-top:12px">
+      <button class="admin-btn" id="wl-save">保存</button>
+      <button class="admin-btn ghost" id="wl-clear">清空</button>
+    </div>
+    <p class="admin-hint" style="margin-top:14px">
+      正式开放注册（邮件能正常发信）之后，<strong>请清空这个白名单</strong>——
+      否则这些邮箱可以不收邮件就登录。
+    </p>`;
+
+  $('#wl-save').onclick = async () => {
+    try {
+      const r = await api('/api/admin/whitelist', {
+        method: 'PUT',
+        body: { raw: $('#wl-input').value }
+      });
+      toast(`已保存 ${r.count} 个邮箱`, 'ok');
+      loadWhitelist();
+    } catch (err) { toast(err.message, 'warn'); }
+  };
+
+  $('#wl-clear').onclick = async () => {
+    if (!confirm('清空白名单？清空后所有邮箱都要收真实邮件才能登录。')) return;
+    try {
+      await api('/api/admin/whitelist', { method: 'PUT', body: { raw: '' } });
+      toast('已清空', 'ok');
+      loadWhitelist();
+    } catch (err) { toast(err.message, 'warn'); }
+  };
+}
+
 boot();
-
-// ── 图片压缩与光标插入 ─────────────────────────────────────
-function shrinkImage(file, maxSide, quality) {
-  return new Promise((resolve, reject) => {
-    if (!/^image\//.test(file.type)) return reject(new Error('请选图片文件'));
-    const reader = new FileReader();
-    reader.onerror = () => reject(new Error('读取失败'));
-    reader.onload = () => {
-      const img = new Image();
-      img.onerror = () => reject(new Error('图片有问题，换一张试试'));
-      img.onload = () => {
-        let w = img.naturalWidth;
-        let h = img.naturalHeight;
-        const scale = Math.min(1, maxSide / Math.max(w, h));
-        w = Math.round(w * scale);
-        h = Math.round(h * scale);
-        const canvas = document.createElement('canvas');
-        canvas.width = w;
-        canvas.height = h;
-        const ctx = canvas.getContext('2d');
-        ctx.fillStyle = '#ffffff';
-        ctx.fillRect(0, 0, w, h);
-        ctx.drawImage(img, 0, 0, w, h);
-        let out = canvas.toDataURL('image/jpeg', quality);
-        // 超过 ~700KB 就继续降质
-        let q = quality;
-        while (out.length > 700 * 1024 && q > 0.4) {
-          q -= 0.12;
-          out = canvas.toDataURL('image/jpeg', q);
-        }
-        if (out.length > 700 * 1024) {
-          return reject(new Error('图片太大，换小一点的'));
-        }
-        resolve(out);
-      };
-      img.src = reader.result;
-    };
-    reader.readAsDataURL(file);
-  });
-}
-
-function insertAtCursor(el, text) {
-  const start = el.selectionStart || 0;
-  const end = el.selectionEnd || 0;
-  const v = el.value;
-  el.value = v.slice(0, start) + text + v.slice(end);
-  const pos = start + text.length;
-  el.setSelectionRange(pos, pos);
-  el.focus();
-}
