@@ -251,35 +251,57 @@ async function sendMail(env, to, code) {
   const text = `您的验证码是 ${code}，5 分钟内有效。\n\n如果这不是您本人的操作，忽略这封邮件即可。\n\n—— ${SITE_NAME}（非官方同人项目）`;
   const subject = `${SITE_NAME} · 登录验证码`;
 
+  // 依次尝试各家通道，任何一家失败都继续试下一家；全失败才报错。
+  const errors = [];
+
   // ① 阿里云邮件推送（境内，推荐）
   const aliyun = aliyunMailConfigFromEnv(env);
   if (aliyun) {
-    await sendMailAliyun({ ...aliyun, to, subject, text });
-    return { delivered: true, via: 'aliyun' };
+    try {
+      await sendMailAliyun({ ...aliyun, to, subject, text });
+      return { delivered: true, via: 'aliyun' };
+    } catch (err) {
+      console.error('[mail] 阿里云失败：', err.message);
+      errors.push(`aliyun: ${err.message}`);
+    }
   }
 
+  // ② Resend（境外备用）
   if (env.RESEND_API_KEY && env.MAIL_FROM) {
-    const res = await fetch('https://api.resend.com/emails', {
-      method: 'POST',
-      headers: { authorization: `Bearer ${env.RESEND_API_KEY}`, 'content-type': 'application/json' },
-      body: JSON.stringify({ from: env.MAIL_FROM, to: [to], subject: `${SITE_NAME} · 登录验证码`, text })
-    });
-    if (!res.ok) throw new Error(`Resend ${res.status}: ${await res.text()}`);
-    return { delivered: true };
+    try {
+      const res = await fetch('https://api.resend.com/emails', {
+        method: 'POST',
+        headers: { authorization: `Bearer ${env.RESEND_API_KEY}`, 'content-type': 'application/json' },
+        body: JSON.stringify({ from: env.MAIL_FROM, to: [to], subject, text })
+      });
+      if (!res.ok) throw new Error(`Resend ${res.status}: ${await res.text()}`);
+      return { delivered: true, via: 'resend' };
+    } catch (err) {
+      console.error('[mail] Resend 失败：', err.message);
+      errors.push(`resend: ${err.message}`);
+    }
   }
 
+  // ③ 自建发信接口
   if (env.MAIL_API_URL) {
-    const res = await fetch(env.MAIL_API_URL, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        ...(env.MAIL_API_TOKEN ? { authorization: `Bearer ${env.MAIL_API_TOKEN}` } : {})
-      },
-      body: JSON.stringify({ to, subject: `${SITE_NAME} · 登录验证码`, text })
-    });
-    if (!res.ok) throw new Error(`MAIL_API ${res.status}`);
-    return { delivered: true };
+    try {
+      const res = await fetch(env.MAIL_API_URL, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          ...(env.MAIL_API_TOKEN ? { authorization: `Bearer ${env.MAIL_API_TOKEN}` } : {})
+        },
+        body: JSON.stringify({ to, subject, text })
+      });
+      if (!res.ok) throw new Error(`MAIL_API ${res.status}`);
+      return { delivered: true, via: 'custom' };
+    } catch (err) {
+      console.error('[mail] 自建接口失败：', err.message);
+      errors.push(`custom: ${err.message}`);
+    }
   }
+
+  if (errors.length) throw new Error(errors.join(' | '));
 
   if (env.ALLOW_DEV_CODE === '1') {
     console.log(`[mail:dev] ${to} -> ${code}`);
