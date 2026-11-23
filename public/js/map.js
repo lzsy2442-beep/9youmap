@@ -4,6 +4,31 @@
 const TILE = 256;
 const MIN_ZOOM = 2.6;
 const ICON_SCALE = 1.3;   // 地图上伞 / 金兔子的整体大小
+
+// 标记图标（PNG，透明底）。同服金、非同服灰，造型相同仅配色不同。
+const MARKER_IMG = {
+  umbrella: { gold: 'icons/markers/marker-umbrella-gold.png', gray: 'icons/markers/marker-umbrella-gray.png' },
+  rabbit: { gold: 'icons/markers/marker-rabbit-gold.png', gray: 'icons/markers/marker-rabbit-gray.png' }
+};
+const _markerCache = new Map();
+
+// 图片按 512 母版标定：主体底部在 y=238/256、主体占高 0.859。
+// 目标逻辑高度 22 单位 → 整图边长 25.6，左上角 (-12.8, -23.8)。
+const MARKER_SIDE = 25.6;
+const MARKER_TOP = -23.8;
+
+function getMarkerImg(kind, same, onload) {
+  const src = MARKER_IMG[kind][same ? 'gold' : 'gray'];
+  let img = _markerCache.get(src);
+  if (!img) {
+    img = new Image();
+    img.onload = onload;
+    img.onerror = () => { img.failed = true; };
+    _markerCache.set(src, img);
+    img.src = src;
+  }
+  return img;
+}
 const MAX_ZOOM = 13;
 
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
@@ -492,8 +517,15 @@ export class PaperMap {
       ctx.setLineDash([]);
     }
 
-    if (m.kind === 'rabbit') drawRabbit(ctx, same);
-    else drawUmbrella(ctx, same ? '#B08A4F' : '#8A7F6D', same);
+    const kind = m.kind === 'rabbit' ? 'rabbit' : 'umbrella';
+    const mimg = getMarkerImg(kind, same, () => { this.dirty = true; });
+    if (mimg.complete && mimg.naturalWidth > 0 && !mimg.failed) {
+      ctx.drawImage(mimg, -MARKER_SIDE / 2, MARKER_TOP, MARKER_SIDE, MARKER_SIDE);
+    } else if (kind === 'rabbit') {
+      drawRabbit(ctx, same);      // 图片未就绪时的兜底
+    } else {
+      drawUmbrella(ctx, same ? '#B08A4F' : '#8A7F6D', same);
+    }
 
     if (isMe) {
       ctx.beginPath();
