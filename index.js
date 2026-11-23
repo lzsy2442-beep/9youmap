@@ -10,6 +10,7 @@ import { LEGAL_TEXT, LEGAL_HASHES } from './data-legal.js';
 import { SCHEMA_SQL, SEED_SQL } from './data-schema.js';
 import { createStore } from './db.js';
 import { issueSession, readSession, clearCookie, hashCode, newCode } from './session.js';
+import { sendMailAliyun, aliyunMailConfigFromEnv } from './mail-aliyun.js';
 
 const json = (data, status = 200, headers = {}) => new Response(JSON.stringify(data), {
   status,
@@ -75,23 +76,84 @@ async function runStatements(env, sql, label) {
   return errors;
 }
 
+// 老库补列：每个 isolate 启动时跑一次，成功的列名记下来，避免反复 ALTER
+const migratedColumns = new Set();
+async function migrateColumns(env) {
+  // 老库补建后加的表（幂等）
+  try {
+    await env.DB.prepare(`CREATE TABLE IF NOT EXISTS settings (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL,
+      updated_at TEXT
+    )`).run();
+  } catch (err) {
+    console.error('[db] 建 settings 表失败：', err.message);
+  }
+
+  try {
+    await env.DB.prepare(`CREATE TABLE IF NOT EXISTS media (
+      id TEXT PRIMARY KEY,
+      mime TEXT NOT NULL,
+      data TEXT NOT NULL,
+      size INTEGER NOT NULL,
+      created_at TEXT NOT NULL
+    )`).run();
+    const rinfo = await env.DB.prepare('PRAGMA table_info(reports)').all();
+    const rcols = (rinfo.results || []).map((c) => c.name);
+    if (rcols.length && !rcols.includes('detail')) {
+      await env.DB.prepare("ALTER TABLE reports ADD COLUMN detail TEXT DEFAULT ''").run();
+    }
+  } catch (err) {
+    console.error('[db] 建 media 表失败：', err.message);
+  }
+
+  const wanted = [['bio_public', 'INTEGER DEFAULT 0']];
+  for (const [name, type] of wanted) {
+    if (migratedColumns.has(name)) continue;
+    // 先查列是否存在，存在就不 ALTER（D1 对重复 ALTER 会报错）
+    try {
+      const info = await env.DB.prepare('PRAGMA table_info(users)').all();
+      const cols = (info.results || []).map((c) => c.name);
+      if (cols.length && !cols.includes(name)) {
+        await env.DB.prepare(`ALTER TABLE users ADD COLUMN ${name} ${type}`).run();
+      }
+      migratedColumns.add(name);
+    } catch (err) {
+      console.error(`[db] 补列 ${name} 失败：`, err.message);
+    }
+  }
+}
+
+function base64ToBytes(b64) {
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
 async function ensureSchema(env) {
   if (schemaReady) return;
+
+  let exists = true;
   try {
     await env.DB.prepare('SELECT 1 FROM users LIMIT 1').first();
-    schemaReady = true;
-    schemaError = null;
-    return;
-  } catch { /* 表不存在，继续建 */ }
-
-  const errs = await runStatements(env, SCHEMA_SQL, '建表');
-  if (errs.length) {
-    schemaError = errs.slice(0, 3).join(' ;; ');
-    return; // 建表失败就别继续了，下次请求再试
+  } catch {
+    exists = false;
   }
-  schemaError = null;
 
-  if (env.AUTO_SEED === '1' && SEED_SQL) {
+  if (!exists) {
+    const errs = await runStatements(env, SCHEMA_SQL, '建表');
+    if (errs.length) {
+      schemaError = errs.slice(0, 3).join(' ;; ');
+      return; // 建表失败就别继续了，下次请求再试
+    }
+    schemaError = null;
+  }
+
+  // 表新建或已存在，都要补一次后加的列（这段以前放在 early return 之后，永远跑不到）
+  await migrateColumns(env);
+
+  if (!exists && env.AUTO_SEED === '1' && SEED_SQL) {
     try {
       const markers = await env.DB.prepare('SELECT COUNT(*) AS n FROM markers').first();
       if (!markers || markers.n === 0) await runStatements(env, SEED_SQL, '示例数据');
@@ -115,7 +177,7 @@ function rateLimit(req, key, max, windowMs) {
 function publicUser(u) {
   if (!u) return null;
   return {
-    id: u.id, nickname: u.nickname, avatar: u.avatar, bio: u.bio, favChar: u.fav_char,
+    id: u.id, nickname: u.nickname, avatar: u.avatar, bio: u.bio, bioPublic: !!u.bio_public, favChar: u.fav_char,
     serverKey: u.server_key, serverName: (SERVERS.find((s) => s.key === u.server_key) || {}).name || u.server_key,
     cityCode: u.city_code, cityName: u.city_name,
     regionLabel: u.city_code ? regionLabel(u.city_code) : '',
@@ -132,6 +194,7 @@ function publicMarker(m, viewer) {
     serverKey: m.server_key, serverName: server?.name || m.server_key,
     serverShort: server?.short || '?', serverColor: server?.color || '#B08A4F',
     uid: m.uid_public ? (m.uid_game || '') : '',
+    bio: m.bio_public ? (m.bio || '') : '',
     sameServer: viewer ? viewer.server_key === m.server_key : false,
     isMine: viewer ? viewer.id === m.user_id : false,
     createdAt: m.created_at
@@ -185,30 +248,60 @@ async function getWeather(store, cityCode, mock) {
 
 // ── 邮件：Workers 里没有 SMTP，走 HTTP 接口（Resend / 自建网关）──
 async function sendMail(env, to, code) {
-  const text = `你的验证码是 ${code}，5 分钟内有效。\n\n如果这不是你本人的操作，忽略这封邮件即可。\n\n—— ${SITE_NAME}（非官方同人项目）`;
+  const text = `您的验证码是 ${code}，5 分钟内有效。\n\n如果这不是您本人的操作，忽略这封邮件即可。\n\n—— ${SITE_NAME}（非官方同人项目）`;
+  const subject = `${SITE_NAME} · 登录验证码`;
 
+  // 依次尝试各家通道，任何一家失败都继续试下一家；全失败才报错。
+  const errors = [];
+
+  // ① 阿里云邮件推送（境内，推荐）
+  const aliyun = aliyunMailConfigFromEnv(env);
+  if (aliyun) {
+    try {
+      await sendMailAliyun({ ...aliyun, to, subject, text });
+      return { delivered: true, via: 'aliyun' };
+    } catch (err) {
+      console.error('[mail] 阿里云失败：', err.message);
+      errors.push(`aliyun: ${err.message}`);
+    }
+  }
+
+  // ② Resend（境外备用）
   if (env.RESEND_API_KEY && env.MAIL_FROM) {
-    const res = await fetch('https://api.resend.com/emails', {
-      method: 'POST',
-      headers: { authorization: `Bearer ${env.RESEND_API_KEY}`, 'content-type': 'application/json' },
-      body: JSON.stringify({ from: env.MAIL_FROM, to: [to], subject: `${SITE_NAME} · 登录验证码`, text })
-    });
-    if (!res.ok) throw new Error(`Resend ${res.status}: ${await res.text()}`);
-    return { delivered: true };
+    try {
+      const res = await fetch('https://api.resend.com/emails', {
+        method: 'POST',
+        headers: { authorization: `Bearer ${env.RESEND_API_KEY}`, 'content-type': 'application/json' },
+        body: JSON.stringify({ from: env.MAIL_FROM, to: [to], subject, text })
+      });
+      if (!res.ok) throw new Error(`Resend ${res.status}: ${await res.text()}`);
+      return { delivered: true, via: 'resend' };
+    } catch (err) {
+      console.error('[mail] Resend 失败：', err.message);
+      errors.push(`resend: ${err.message}`);
+    }
   }
 
+  // ③ 自建发信接口
   if (env.MAIL_API_URL) {
-    const res = await fetch(env.MAIL_API_URL, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        ...(env.MAIL_API_TOKEN ? { authorization: `Bearer ${env.MAIL_API_TOKEN}` } : {})
-      },
-      body: JSON.stringify({ to, subject: `${SITE_NAME} · 登录验证码`, text })
-    });
-    if (!res.ok) throw new Error(`MAIL_API ${res.status}`);
-    return { delivered: true };
+    try {
+      const res = await fetch(env.MAIL_API_URL, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          ...(env.MAIL_API_TOKEN ? { authorization: `Bearer ${env.MAIL_API_TOKEN}` } : {})
+        },
+        body: JSON.stringify({ to, subject, text })
+      });
+      if (!res.ok) throw new Error(`MAIL_API ${res.status}`);
+      return { delivered: true, via: 'custom' };
+    } catch (err) {
+      console.error('[mail] 自建接口失败：', err.message);
+      errors.push(`custom: ${err.message}`);
+    }
   }
+
+  if (errors.length) throw new Error(errors.join(' | '));
 
   if (env.ALLOW_DEV_CODE === '1') {
     console.log(`[mail:dev] ${to} -> ${code}`);
@@ -370,6 +463,16 @@ export default {
         }
         const code = newCode();
         await store.setCode(email, await hashCode(secret, email, code), LIMITS.codeTtlSec);
+
+        // 测试白名单：数据库优先，环境变量兜底。命中则不发邮件，直接把码返回给前端。
+        const envWhite = String(env.TEST_EMAILS || '')
+          .split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
+        const dbWhite = await store.readWhitelist();
+        if (dbWhite.includes(email) || envWhite.includes(email)) {
+          console.log(`[mail:test] ${email} 命中白名单，未发送邮件`);
+          return json({ ok: true, delivered: false, devCode: code, ttl: LIMITS.codeTtlSec, testMode: true });
+        }
+
         let sent;
         try {
           sent = await sendMail(env, email, code);
@@ -393,13 +496,21 @@ export default {
           await store.bumpCodeTry(email);
           return fail(400, 'code_wrong', '验证码不对');
         }
-        await store.clearCode(email);
+        // 验证码等真正登录成功后再作废（新用户第一次提交只返回 PROFILE_REQUIRED）
 
         const consents = b.consents || {};
         const missing = REQUIRED_CONSENTS.filter((t) => consents[t] !== true);
         let user = await store.getUserByEmail(email);
         const isNew = !user;
-        if (isNew && missing.length) return fail(428, 'CONSENT_REQUIRED', '请先同意相关条款', { missing });
+        // 新用户才需要「资料 + 同意」；老用户只凭邮箱 + 验证码即可登录
+        if (isNew) {
+          const serverKey0 = String(b.serverKey || '');
+          const cityCode0 = String(b.cityCode || '');
+          const nickname0 = String(b.nickname || '').trim();
+          if (missing.length || !serverKey0 || !cityCode0 || nickname0.length < 2) {
+            return fail(428, 'PROFILE_REQUIRED', '新用户需要完善资料', { missing, needProfile: true });
+          }
+        }
 
         if (isNew) {
           const serverKey = String(b.serverKey || '');
@@ -418,9 +529,15 @@ export default {
           else if (consents[type] === false) await store.recordConsent({ userId: user.id, docType: type, action: 'withdraw', ip: clientIp(request), ua: request.headers.get('user-agent') });
         }
         await store.touchLastSeen(user.id);
+        await store.clearCode(email);
 
         const session = await issueSession(secret, user.id, { secure: new URL(request.url).protocol === 'https:' });
-        return json({ ok: true, user: publicUser(user), consent: { state: await store.consentState(user.id) } }, 200, { 'set-cookie': session.cookie });
+        return json({
+          ok: true,
+          user: publicUser(user),
+          consent: { state: await store.consentState(user.id) },
+          isNew
+        }, 200, { 'set-cookie': session.cookie });
       }
 
       if (path === '/api/auth/logout' && method === 'POST') {
@@ -435,8 +552,14 @@ export default {
           consent: { state: await store.consentState(viewer.id), needs: [], version: 'v1.0', hashes: LEGAL_HASHES },
           markers: await store.listUserMarkers(viewer.id),
           friends: await store.listFriends(viewer.id),
-          friendCount: await store.countFriends(viewer.id)
+          friendCount: await store.countFriends(viewer.id),
+          touches: await store.listTouchesReceived(viewer.id, 30)
         });
+      }
+
+      if (path === '/api/touches' && method === 'GET') {
+        if (!viewer) return fail(401, 'unauthorized', '请先登录');
+        return json({ ok: true, touches: await store.listTouchesReceived(viewer.id, 50) });
       }
 
       if (path === '/api/me' && method === 'PATCH') {
@@ -451,6 +574,7 @@ export default {
           patch.nickname = n;
         }
         if (b.bio !== undefined) patch.bio = String(b.bio).slice(0, 80);
+        if (b.bioPublic !== undefined) patch.bio_public = b.bioPublic ? 1 : 0;
         if (b.favChar !== undefined) patch.fav_char = String(b.favChar).slice(0, 20);
         if (b.uidGame !== undefined) patch.uid_game = String(b.uidGame).replace(/[^0-9]/g, '').slice(0, 12);
         if (b.uidPublic !== undefined) patch.uid_public = b.uidPublic ? 1 : 0;
@@ -486,7 +610,8 @@ export default {
         await store.addReport({
           targetType: String(b.targetType || 'marker'),
           targetId: String(b.targetId || ''),
-          reason: String(b.reason || '').slice(0, 500),
+          reason: String(b.reason || '').slice(0, 60),
+          detail: String(b.detail || '').slice(0, 500),
           fromUser: viewer ? viewer.id : ''
         });
         return json({ ok: true });
@@ -506,7 +631,7 @@ export default {
         const md = LEGAL_TEXT[slug];
         if (!meta || !md) return fail(404, 'not_found', '没有这份文件');
         const nav = LEGAL_DOCS.map((d) => `<a href="/legal/${d.slug}" class="${d.slug === slug ? 'on' : ''}">${d.title}</a>`).join('');
-        const html = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
+        const html = `<!doctype html><html lang="zh-CN" class="legal-html"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>${meta.title} · ${SITE_NAME}</title>
 <link rel="stylesheet" href="/css/style.css"></head><body class="legal-body">
 <header class="legal-top"><a class="legal-back" href="/">← 回到地图</a><span class="legal-brand">${SITE_NAME}</span></header>
@@ -548,11 +673,26 @@ ${renderMarkdown(md)}</article></div></body></html>`;
           hasAdminEmail: !!(env.ADMIN_EMAIL && env.ADMIN_EMAIL.includes('@')),
           hasMailFrom: !!env.MAIL_FROM,
           hasResend: !!env.RESEND_API_KEY,
+          hasAliyunDM: !!(env.ALIYUN_DM_AK_ID && env.ALIYUN_DM_AK_SECRET),
+          mailAccount: env.ALIYUN_DM_ACCOUNT || env.MAIL_FROM || '',
           sessionSecretIsDefault: !env.SESSION_SECRET || env.SESSION_SECRET === 'dev-secret-change-me'
         });
       }
 
       // ── 管理后台 ───────────────────────────────────────
+      // ── 图片读取（公开，不要求登录）─────────────────────
+      if (path.startsWith('/api/media/') && method === 'GET') {
+        const id = path.slice('/api/media/'.length);
+        const row = await store.getMedia(id);
+        if (!row) return new Response('not found', { status: 404 });
+        return new Response(base64ToBytes(row.data), {
+          headers: {
+            'content-type': row.mime,
+            'cache-control': 'public, max-age=31536000, immutable'
+          }
+        });
+      }
+
       if (path.startsWith('/api/admin/')) {
         if (!viewer) return fail(401, 'unauthorized', '请先登录');
         const isAdmin = viewer.role === 'admin' || viewer.role === 'site_admin';
@@ -597,12 +737,58 @@ ${renderMarkdown(md)}</article></div></body></html>`;
         }
         if (mUser && method === 'PATCH') {
           const b = await body();
-          if (mUser[1] === viewer.id && b.role && b.role !== 'site_admin' && viewer.role === 'site_admin') {
-            return fail(400, 'bad_request', '不能给自己降权');
+          const target = await store.getUserById(mUser[1]);
+          if (!target) return fail(404, 'not_found', '找不到这个用户');
+
+          // 权限边界：只有站长能改角色，站长这个角色谁都不能动
+          if (b.role !== undefined && viewer.role !== 'site_admin') {
+            return fail(403, 'forbidden', '只有站长可以调整角色');
           }
+          if (b.role !== undefined && target.role === 'site_admin') {
+            return fail(403, 'forbidden', '不能修改站长');
+          }
+          if (b.role === 'site_admin') {
+            return fail(403, 'forbidden', '站长只有一个，暂不支持转让');
+          }
+          if (b.banned !== undefined) {
+            if (target.role === 'site_admin') return fail(403, 'forbidden', '不能封禁站长');
+            if (target.role === 'admin' && viewer.role !== 'site_admin') {
+              return fail(403, 'forbidden', '只有站长可以处置管理员');
+            }
+          }
+
           const u = await store.adminSetUser(mUser[1], b);
           if (!u) return fail(400, 'bad_request', '没有可更新的字段');
           return json({ ok: true, user: u });
+        }
+
+
+        if (path === '/api/admin/media' && method === 'POST') {
+          const b = await body();
+          const dataUrl = String(b.dataUrl || '');
+          const m = /^data:(image\/[a-z+]+);base64,(.+)$/i.exec(dataUrl);
+          if (!m) return fail(400, 'bad_image', '图片格式不对');
+          const mime = m[1].toLowerCase();
+          if (!['image/jpeg', 'image/png', 'image/webp', 'image/gif'].includes(mime)) {
+            return fail(400, 'bad_type', '只支持 JPG / PNG / WebP / GIF');
+          }
+          const b64 = m[2];
+          if (b64.length > 900 * 1024) return fail(413, 'too_big', '图片太大，请压缩后重试');
+          const id = crypto.randomUUID().replace(/-/g, '').slice(0, 16);
+          await store.saveMedia({ id, mime, data: b64, size: Math.floor(b64.length * 0.75) });
+          return json({ ok: true, url: `/api/media/${id}` });
+        }
+
+        if (path === '/api/admin/whitelist' && method === 'GET') {
+          const emails = await store.readWhitelist();
+          const envEmails = String(env.TEST_EMAILS || '')
+            .split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
+          return json({ ok: true, emails, envEmails, raw: (await store.getSetting('test_emails')) || '' });
+        }
+        if (path === '/api/admin/whitelist' && method === 'PUT') {
+          const b = await body();
+          const list = await store.writeWhitelist(b.raw || '');
+          return json({ ok: true, emails: list, count: list.length });
         }
 
         if (path === '/api/admin/markers' && method === 'GET') {
@@ -630,7 +816,16 @@ ${renderMarkdown(md)}</article></div></body></html>`;
       }
 
       // ── 静态资源交给 Cloudflare 的 assets 绑定 ──────────
-      if (env.ASSETS) return env.ASSETS.fetch(request);
+      if (env.ASSETS) {
+        // 无扩展名的页面地址
+        if (path === '/guide' || path === '/guide/') {
+          return env.ASSETS.fetch(new Request(new URL('/guide.html', url), request));
+        }
+        if (path === '/admin' || path === '/admin/') {
+          return env.ASSETS.fetch(new Request(new URL('/admin.html', url), request));
+        }
+        return env.ASSETS.fetch(request);
+      }
 
       return fail(404, 'not_found', '页面不存在');
     } catch (err) {
