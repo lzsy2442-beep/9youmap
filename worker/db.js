@@ -158,7 +158,7 @@ export function createStore(env) {
     },
 
     // ── 互动 ──────────────────────────────────────────────
-    async addTouch(fromUser, markerId, kind) {
+    async addTouch(fromUser, markerId, kind, note = '') {
       const m = await store.getMarker(markerId);
       if (!m) return { ok: false, error: 'marker_not_found' };
       if (m.user_id === fromUser) return { ok: false, error: 'self' };
@@ -224,7 +224,7 @@ export function createStore(env) {
 
     async listTouchesReceived(userId, limit = 40) {
       return all(`
-        SELECT t.kind, t.created_at, t.from_user,
+        SELECT t.id, t.kind, t.created_at, t.from_user, t.note, t.seen,
                u.nickname AS from_nickname,
                u.server_key AS from_server_key,
                s.name AS from_server_name, s.short AS from_server_short, s.color AS from_server_color,
@@ -312,9 +312,9 @@ export function createStore(env) {
       `, now(), limit);
     },
 
-    async addNotice({ title, body, level = 'info', pinned = 0, expiresAt = null }) {
-      await run('INSERT INTO notices (title,body,level,pinned,created_at,expires_at) VALUES (?,?,?,?,?,?)',
-        title, body, level, pinned ? 1 : 0, now(), expiresAt);
+    async addNotice({ title, body, level = 'info', category = 'notice', pinned = 0, expiresAt = null }) {
+      await run('INSERT INTO notices (title,body,level,category,pinned,created_at,expires_at) VALUES (?,?,?,?,?,?,?)',
+        title, body, level, category, pinned ? 1 : 0, now(), expiresAt);
       return first('SELECT * FROM notices ORDER BY id DESC LIMIT 1');
     },
 
@@ -407,6 +407,8 @@ export function createStore(env) {
     async adminListReports() {
       return all(`
         SELECT r.*, u.nickname AS reporter,
+               tt.note AS target_note, tt.kind AS target_touch_kind, tt.created_at AS target_touch_at,
+               tn.id AS note_author_id, tn.nickname AS note_author,
                m.label AS target_marker_label, m.kind AS target_marker_kind,
                m.lat AS target_lat, m.lng AS target_lng,
                t.id AS target_user_id, t.nickname AS target_nickname, t.banned AS target_banned,
@@ -414,6 +416,8 @@ export function createStore(env) {
         FROM reports r
         LEFT JOIN users u ON u.id = r.from_user
         LEFT JOIN markers m ON m.id = r.target_id AND r.target_type = 'marker'
+        LEFT JOIN touches tt ON tt.id = r.target_id AND r.target_type = 'touch'
+        LEFT JOIN users tn ON tn.id = tt.from_user
         LEFT JOIN users t ON t.id = m.user_id
         LEFT JOIN servers s ON s.key = t.server_key
         ORDER BY r.created_at DESC LIMIT 100
@@ -489,6 +493,22 @@ export function createStore(env) {
         .filter((s) => /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(s));
       await store.setSetting('test_emails', list.join('\n'));
       return list;
+    },
+
+    /** 未读互动数 */
+    async countUnreadTouches(userId) {
+      const row = await first('SELECT COUNT(*) AS n FROM touches WHERE to_user = ? AND seen = 0', userId);
+      return row ? row.n : 0;
+    },
+
+    /** 把收到的互动全部标记为已读 */
+    async markTouchesSeen(userId) {
+      await run('UPDATE touches SET seen = 1 WHERE to_user = ? AND seen = 0', userId);
+    },
+
+    /** 单条互动（举报留言时用来校验归属） */
+    async getTouch(id) {
+      return first('SELECT id, from_user, to_user, to_marker, kind, note FROM touches WHERE id = ?', id);
     },
 
     SERVER_MAP

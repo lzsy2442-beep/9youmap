@@ -47,6 +47,8 @@ CREATE TABLE IF NOT EXISTS touches (
   to_marker TEXT NOT NULL,
   to_user TEXT NOT NULL,
   kind TEXT NOT NULL CHECK (kind IN ('knock','give')),
+  note TEXT DEFAULT '',
+  seen INTEGER DEFAULT 0,
   created_at TEXT NOT NULL
 );
 
@@ -92,6 +94,7 @@ CREATE TABLE IF NOT EXISTS notices (
   title TEXT NOT NULL,
   body TEXT NOT NULL,
   level TEXT DEFAULT 'info',
+  category TEXT DEFAULT 'notice',
   pinned INTEGER DEFAULT 0,
   created_at TEXT NOT NULL,
   expires_at TEXT

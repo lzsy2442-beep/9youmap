@@ -1242,3 +1242,97 @@ body[data-weather="snow"] #map { filter: saturate(0.82) brightness(0.97) contras
 /* 触控目标：关闭按钮 26→32，缩放按钮 40→44 */
 .icon-btn { min-width: 32px; min-height: 32px; }
 .zoom-btn { min-height: 44px; }
+
+/* 互动红点：被敲伞沿 / 被递伞时，在「箱子」和「我的」上提示 */
+.rail-item { position: relative; }
+#btn-login { position: relative; }
+.rail-item.has-unread::after,
+#btn-login.has-unread::after {
+  content: "";
+  position: absolute;
+  top: 4px;
+  right: 6px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--rust);
+  box-shadow: 0 0 0 2px var(--paper);
+  animation: dotPulse 2.4s ease-in-out infinite;
+}
+@keyframes dotPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .rail-item.has-unread::after, #btn-login.has-unread::after { animation: none; }
+}
+
+/* 互动留言 */
+.near-note {
+  display: block;
+  margin-top: 3px;
+  font-size: calc(12px * var(--fs));
+  line-height: 1.6;
+  color: var(--ink);
+  background: rgba(176, 138, 79, 0.1);
+  border-left: 2px solid var(--brass);
+  border-radius: 2px;
+  padding: 4px 7px;
+  word-break: break-word;
+}
+#touch-note {
+  width: 100%;
+  min-height: 84px;
+  resize: vertical;
+  line-height: 1.65;
+}
+
+/* 公告分类 */
+.notice-cats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0 0 12px;
+}
+.notice-cat {
+  font-style: normal;
+  font-size: calc(10.5px * var(--fs));
+  letter-spacing: 0.5px;
+  color: var(--brass);
+  border: 1px solid rgba(176, 138, 79, 0.5);
+  border-radius: 999px;
+  padding: 1px 7px;
+  margin-left: 6px;
+  vertical-align: 2px;
+}
+
+/* 分类筛选选中态 */
+.chip.on {
+  background: var(--brass);
+  color: var(--paper-lit);
+  border-color: var(--brass);
+}
+
+/* 互动列表右侧：举报 + 去看看 */
+.touch-acts {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+}
+.touch-acts .link-btn {
+  font-size: calc(11.5px * var(--fs));
+  color: var(--ink-faint);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  background: none;
+  border: 0;
+  cursor: pointer;
+  padding: 0;
+}
+.touch-acts .link-btn:hover { color: var(--rust); }
+
+/* 举报留言卡片里的引用 */
+blockquote.near-note {
+  margin: 8px 0 12px;
+}

@@ -6,6 +6,11 @@ import {
 } from '../server/constants.js';
 import { renderMarkdown } from '../server/md.js';
 import { PROVINCES, CITY_POINTS, REGION_STATS, getRegion, regionLabel, isInChina } from './regions.js';
+
+// 公告分类（管理台发布时选择）
+const NOTICE_CATEGORIES = {
+  notice: '公告', maintenance: '维护公告', feature: '功能上新', dev: '开发者提醒'
+};
 import { LEGAL_TEXT, LEGAL_HASHES } from './data-legal.js';
 import { SCHEMA_SQL, SEED_SQL } from './data-schema.js';
 import { createStore } from './db.js';
@@ -102,6 +107,21 @@ async function migrateColumns(env) {
     const rcols = (rinfo.results || []).map((c) => c.name);
     if (rcols.length && !rcols.includes('detail')) {
       await env.DB.prepare("ALTER TABLE reports ADD COLUMN detail TEXT DEFAULT ''").run();
+    }
+
+    const tinfo = await env.DB.prepare('PRAGMA table_info(touches)').all();
+    const tcols = (tinfo.results || []).map((c) => c.name);
+    if (tcols.length && !tcols.includes('note')) {
+      await env.DB.prepare("ALTER TABLE touches ADD COLUMN note TEXT DEFAULT ''").run();
+    }
+    if (tcols.length && !tcols.includes('seen')) {
+      await env.DB.prepare('ALTER TABLE touches ADD COLUMN seen INTEGER DEFAULT 0').run();
+    }
+
+    const ninfo = await env.DB.prepare('PRAGMA table_info(notices)').all();
+    const ncols = (ninfo.results || []).map((c) => c.name);
+    if (ncols.length && !ncols.includes('category')) {
+      await env.DB.prepare("ALTER TABLE notices ADD COLUMN category TEXT DEFAULT 'notice'").run();
     }
   } catch (err) {
     console.error('[db] 建 media 表失败：', err.message);
@@ -437,7 +457,7 @@ export default {
         if (!viewer) return fail(401, 'unauthorized', '请先登录');
         const b = await body();
         const kind = b.kind === 'give' ? 'give' : 'knock';
-        const r = await store.addTouch(viewer.id, String(b.markerId || ''), kind);
+        const r = await store.addTouch(viewer.id, String(b.markerId || ''), kind, String(b.note || ''));
         if (!r.ok) {
           const map = {
             marker_not_found: [404, '找不到对方'], self: [400, '不能碰自己'],
@@ -553,13 +573,24 @@ export default {
           markers: await store.listUserMarkers(viewer.id),
           friends: await store.listFriends(viewer.id),
           friendCount: await store.countFriends(viewer.id),
-          touches: await store.listTouchesReceived(viewer.id, 30)
+          touches: await store.listTouchesReceived(viewer.id, 30),
+          unread: await store.countUnreadTouches(viewer.id)
         });
       }
 
       if (path === '/api/touches' && method === 'GET') {
         if (!viewer) return fail(401, 'unauthorized', '请先登录');
-        return json({ ok: true, touches: await store.listTouchesReceived(viewer.id, 50) });
+        return json({
+          ok: true,
+          touches: await store.listTouchesReceived(viewer.id, 50),
+          unread: await store.countUnreadTouches(viewer.id)
+        });
+      }
+
+      if (path === '/api/touches/seen' && method === 'POST') {
+        if (!viewer) return fail(401, 'unauthorized', '请先登录');
+        await store.markTouchesSeen(viewer.id);
+        return json({ ok: true });
       }
 
       if (path === '/api/me' && method === 'PATCH') {
@@ -607,8 +638,18 @@ export default {
       if (path === '/api/report' && method === 'POST') {
         if (!rateLimit(request, 'report', 10, 3600e3)) return fail(429, 'rate_limited', '举报太频繁');
         const b = await body();
+
+        const targetType = String(b.targetType || 'marker');
+        // 留言举报：只有收到这条留言的人才能举报
+        if (targetType === 'touch') {
+          if (!viewer) return fail(401, 'unauthorized', '请先登录');
+          const touch = await store.getTouch(String(b.targetId || ''));
+          if (!touch) return fail(404, 'not_found', '这条互动已经不存在了');
+          if (touch.to_user !== viewer.id) return fail(403, 'forbidden', '只能举报发给您的留言');
+        }
+
         await store.addReport({
-          targetType: String(b.targetType || 'marker'),
+          targetType,
           targetId: String(b.targetId || ''),
           reason: String(b.reason || '').slice(0, 60),
           detail: String(b.detail || '').slice(0, 500),
@@ -709,6 +750,7 @@ ${renderMarkdown(md)}</article></div></body></html>`;
           const notice = await store.addNotice({
             title, body: text,
             level: ['info', 'warn', 'important'].includes(b.level) ? b.level : 'info',
+            category: NOTICE_CATEGORIES[b.category] ? b.category : 'notice',
             pinned: !!b.pinned, expiresAt: b.expiresAt || null
           });
           return json({ ok: true, notice });

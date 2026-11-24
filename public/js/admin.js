@@ -1,4 +1,4 @@
-﻿// 管理台：概览 / 公告 / 用户 / 标记 / 举报
+// 管理台：概览 / 公告 / 用户 / 标记 / 举报
 const $ = (sel, root = document) => root.querySelector(sel);
 const nz = (v, d) => (v === null || v === undefined ? d : v);
 const esc = (s) => String(nz(s, '')).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -10,6 +10,7 @@ const fmtDate = (iso) => {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 };
 
+const NOTICE_CAT = { notice: '公告', maintenance: '维护公告', feature: '功能上新', dev: '开发者提醒' };
 const ROLE_LABEL = { site_admin: '站长', admin: '管理员', user: '普通' };
 
 // 与后端一致的权限边界：只有站长能调整角色；站长账号任何人都不能处置
@@ -161,6 +162,14 @@ async function loadNotices() {
         <input type="file" id="notice-img-file" accept="image/*" hidden>
       </div>
       <div class="row">
+        <label>分类
+          <select name="category">
+            <option value="maintenance">维护公告</option>
+            <option value="feature">功能上新</option>
+            <option value="dev">开发者提醒</option>
+            <option value="notice">其他 / 普通公告</option>
+          </select>
+        </label>
         <label>级别
           <select name="level">
             <option value="info">普通（info）</option>
@@ -179,18 +188,19 @@ async function loadNotices() {
     <h2 class="admin-h2">已有的公告（${notices.length}）</h2>
     <div class="table-wrap">
       <table class="admin-table">
-        <thead><tr><th>标题</th><th>级别</th><th>置顶</th><th>时间</th><th>操作</th></tr></thead>
+        <thead><tr><th>标题</th><th>级别</th><th>分类</th><th>置顶</th><th>时间</th><th>操作</th></tr></thead>
         <tbody>
           ${notices.map((n) => `<tr data-id="${n.id}">
             <td class="wrap">${esc(n.title)}</td>
             <td><span class="tag ${esc(n.level)}">${esc(n.level)}</span></td>
+            <td>${esc(NOTICE_CAT[n.category] || '公告')}</td>
             <td>${n.pinned ? '<span class="tag pin">置顶</span>' : '—'}</td>
             <td>${fmtDate(n.created_at)}</td>
             <td>
               <button class="admin-btn small ghost" data-pin="${n.id}" data-v="${n.pinned ? 0 : 1}">${n.pinned ? '取消置顶' : '置顶'}</button>
               <button class="admin-btn small danger" data-del="${n.id}">删除</button>
             </td>
-          </tr>`).join('') || '<tr><td colspan="5" class="empty-row">还没有公告</td></tr>'}
+          </tr>`).join('') || '<tr><td colspan="6" class="empty-row">还没有公告</td></tr>'}
         </tbody>
       </table>
     </div>`;
@@ -228,6 +238,7 @@ async function loadNotices() {
           title: f.title.value.trim(),
           body: f.body.value.trim(),
           level: f.level.value,
+          category: f.category.value,
           pinned: f.pinned.checked,
           expiresAt: f.expiresAt.value.trim() || null
         }
@@ -270,10 +281,13 @@ async function loadUsers(page = state.users.page, q = state.users.q) {
     </div>
     <div class="table-wrap">
       <table class="admin-table">
-        <thead><tr><th>昵称</th><th>渠道服</th><th>标记</th><th>角色</th><th>状态</th><th>注册</th><th>操作</th></tr></thead>
+        <thead><tr><th>昵称</th><th>邮箱</th><th>渠道服</th><th>标记</th><th>角色</th><th>状态</th><th>注册</th><th>操作</th></tr></thead>
         <tbody>
           ${d.rows.map((u) => `<tr>
             <td>${esc(u.nickname)}${u.is_seed ? ' <span class="tag">示例</span>' : ''}</td>
+            <td class="wrap">${u.email
+              ? `<button class="link-btn" data-copy="${esc(u.email)}" title="点击复制">${esc(u.email)}</button>`
+              : '<span class="muted">—</span>'}</td>
             <td>${esc(u.server_name || u.server_key)}</td>
             <td>${u.marker_count}</td>
             <td><span class="tag role">${esc(roleLabel(u.role))}</span></td>
@@ -282,7 +296,7 @@ async function loadUsers(page = state.users.page, q = state.users.q) {
             <td>
               ${canChangeRole(u) ? `<button class="admin-btn small ghost" data-role="${esc(u.id)}" data-v="${u.role === 'admin' ? 'user' : 'admin'}">${u.role === 'admin' ? '降为普通' : '设为管理员'}</button>` : ''}
               ${canBan(u) ? `<button class="admin-btn small ${u.banned ? 'ghost' : 'danger'}" data-ban="${esc(u.id)}" data-v="${u.banned ? 0 : 1}">${u.banned ? '解封' : '封禁'}</button>` : '<span class="muted">—</span>'}            </td>
-          </tr>`).join('') || '<tr><td colspan="7" class="empty-row">没有匹配的账号</td></tr>'}
+          </tr>`).join('') || '<tr><td colspan="8" class="empty-row">没有匹配的账号</td></tr>'}
         </tbody>
       </table>
     </div>
@@ -296,6 +310,17 @@ async function loadUsers(page = state.users.page, q = state.users.q) {
   $('#user-q').onkeydown = (e) => { if (e.key === 'Enter') loadUsers(1, e.target.value.trim()); };
   $('#prev-page').onclick = () => loadUsers(page - 1, q);
   $('#next-page').onclick = () => loadUsers(page + 1, q);
+
+  document.querySelectorAll('[data-copy]').forEach((b) => {
+    b.onclick = async () => {
+      const v = b.dataset.copy;
+      try {
+        if (navigator.clipboard && navigator.clipboard.writeText) await navigator.clipboard.writeText(v);
+        else { window.prompt('复制这个邮箱：', v); return; }
+        toast('已复制 ' + v, 'ok');
+      } catch { window.prompt('复制这个邮箱：', v); }
+    };
+  });
 
   document.querySelectorAll('[data-role]').forEach((b) => {
     b.onclick = async () => {
@@ -342,7 +367,10 @@ async function loadMarkers(page = state.markers.page, q = state.markers.q, serve
             <td>${m.lat.toFixed(3)}, ${m.lng.toFixed(3)}</td>
             <td>${esc(m.label || '—')}</td>
             <td>${fmtDate(m.created_at)}</td>
-            <td><button class="admin-btn small danger" data-delmarker="${esc(m.id)}">删除</button></td>
+            <td>
+              <button class="admin-btn small ghost" data-fly="${m.lat},${m.lng}">传送</button>
+              <button class="admin-btn small danger" data-delmarker="${esc(m.id)}">删除</button>
+            </td>
           </tr>`).join('') || '<tr><td colspan="7" class="empty-row">没有匹配的标记</td></tr>'}
         </tbody>
       </table>
@@ -356,6 +384,13 @@ async function loadMarkers(page = state.markers.page, q = state.markers.q, serve
   $('#marker-search').onclick = () => loadMarkers(1, $('#marker-q').value.trim(), $('#marker-server').value);
   $('#prev-page').onclick = () => loadMarkers(page - 1, q, server);
   $('#next-page').onclick = () => loadMarkers(page + 1, q, server);
+
+  document.querySelectorAll('[data-fly]').forEach((b) => {
+    b.onclick = () => {
+      // 同一标签页跳到地图并定位，不新开窗口
+      location.href = `/?fly=${encodeURIComponent(b.dataset.fly)}`;
+    };
+  });
 
   document.querySelectorAll('[data-delmarker]').forEach((b) => {
     b.onclick = async () => {
@@ -386,15 +421,21 @@ async function loadReports() {
         <thead><tr><th>时间</th><th>被举报人</th><th>点位</th><th>原因</th><th>举报人</th><th>状态</th><th>操作</th></tr></thead>
         <tbody>
           ${reports.map((r) => {
-            const who = r.target_nickname
-              ? `<button class="admin-btn small ghost" data-user="${esc(r.target_user_id)}">${esc(r.target_nickname)}${r.target_banned ? '（已封禁）' : ''}</button>`
-              : '<span class="muted">已被删除</span>';
+            const who = r.target_type === 'touch'
+              ? (r.note_author_id
+                ? `<button class="admin-btn small ghost" data-user="${esc(r.note_author_id)}">${esc(r.note_author)}</button>`
+                : '<span class="muted">已注销</span>')
+              : r.target_nickname
+                ? `<button class="admin-btn small ghost" data-user="${esc(r.target_user_id)}">${esc(r.target_nickname)}${r.target_banned ? '（已封禁）' : ''}</button>`
+                : '<span class="muted">已被删除</span>';
             const pos = Number.isFinite(r.target_lat)
               ? `${r.target_lat.toFixed(3)}, ${r.target_lng.toFixed(3)}`
               : '';
             const spot = r.target_type === 'marker'
               ? `${r.target_marker_kind === 'rabbit' ? '金兔子' : '伞'}${r.target_marker_label ? ' · ' + esc(r.target_marker_label) : ''}${pos ? `<br><span class="muted">${pos}</span>` : ''}`
-              : `${esc(r.target_type)} / ${esc(String(r.target_id).slice(0, 10))}`;
+              : r.target_type === 'touch'
+                ? `<span class="muted">${r.target_touch_kind === 'give' ? '递伞留言' : '敲伞留言'}</span><br>“${esc(r.target_note || '（留言已删除）')}”`
+                : `${esc(r.target_type)} / ${esc(String(r.target_id).slice(0, 10))}`;
             return `<tr>
               <td>${fmtDate(r.created_at)}</td>
               <td>${who}${r.target_server_name ? `<br><span class="muted">${esc(r.target_server_name)}</span>` : ''}</td>
@@ -403,7 +444,9 @@ async function loadReports() {
               <td>${esc(r.reporter || '游客')}</td>
               <td>${statusTag(r.status)}</td>
               <td>
-                ${r.target_user_id ? `<button class="admin-btn small" data-user="${esc(r.target_user_id)}">处理 TA</button>` : ''}
+                ${(r.target_type === 'touch' ? r.note_author_id : r.target_user_id)
+                  ? `<button class="admin-btn small" data-user="${esc(r.target_type === 'touch' ? r.note_author_id : r.target_user_id)}">处理 TA</button>`
+                  : ''}
                 <button class="admin-btn small ghost" data-rep="${r.id}" data-v="done">已处理</button>
                 <button class="admin-btn small ghost" data-rep="${r.id}" data-v="ignored">忽略</button>
               </td>

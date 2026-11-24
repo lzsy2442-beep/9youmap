@@ -9,6 +9,7 @@ const legalDocs = (site) => (site && site.legal && site.legal.docs) || [];
 const esc = (s) => String(nz(s, '')).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 const S = {
+  unread: 0,
   site: null,
   servers: [],
   cities: [],
@@ -120,6 +121,17 @@ async function boot() {
 
   S.settings = loadSettings();
   initMap();
+
+  // 管理台「传送」用：/?fly=lat,lng
+  try {
+    const fly = new URLSearchParams(location.search).get('fly');
+    if (fly) {
+      const parts = fly.split(',').map(Number);
+      if (parts.length === 2 && isFinite(parts[0]) && isFinite(parts[1])) {
+        S.map.flyTo(parts[0], parts[1], 13);
+      }
+    }
+  } catch { /* 忽略 */ }
   applySettings();
   refreshNoticeDot();
   renderCounter();
@@ -129,6 +141,8 @@ async function boot() {
   loadWeather(S.cityCode);
 
   connectStream();
+  refreshUnread();
+  setInterval(refreshUnread, 60000);
 
   if (!S.me) {
     setTimeout(() => toast('拖动地图看看 · 登录后就能把伞放在这里'), 900);
@@ -213,6 +227,25 @@ async function loadFeed() {
   } catch { /* 静默 */ }
 }
 
+// ── 互动红点 ───────────────────────────────────────────────
+function updateTallyDots() {
+  const on = !!S.me && S.unread > 0;
+  document.querySelectorAll('[data-act="case"], #btn-login').forEach((el) => {
+    el.classList.toggle('has-unread', on);
+  });
+  const btn = $('#btn-login');
+  if (btn && S.me) btn.title = on ? '箱子：有新的互动' : '箱子';
+}
+
+async function refreshUnread() {
+  if (!S.me) { S.unread = 0; updateTallyDots(); return; }
+  try {
+    const r = await api('/api/touches');
+    S.unread = r.unread || 0;
+    updateTallyDots();
+  } catch { /* 网络抖动时保持原样 */ }
+}
+
 // 删除 / 撤权 / 换账号后需要整表重拉（since 增量拿不到「消失」）
 async function reloadAll() {
   S.seq = 0;
@@ -227,7 +260,7 @@ function connectStream() {
     es.onmessage = (ev) => {
       try {
         const d = JSON.parse(ev.data);
-        if (d.type === 'feed') loadFeed();
+        if (d.type === 'feed') { loadFeed(); refreshUnread(); }
       } catch { /* noop */ }
     };
     es.onerror = () => { /* 浏览器会自动重连 */ };
@@ -501,13 +534,79 @@ function openMarkerCard(m) {
   });
 }
 
-async function doTouch(m, kind) {
-  try {
-    const r = await api('/api/touch', { method: 'POST', body: { markerId: m.id, kind } });
-    if (r.friend) toast('你们互相递了伞，成了同伞之交', 'ok');
-    else if (kind === 'give') toast('伞递过去了，等 TA 也递回来', 'ok');
-    else toast('轻轻碰了一下，TA 只知道伞动了一下');
-  } catch (err) { toast(err.message, 'warn'); }
+function doTouch(m, kind) {
+  const isGive = kind === 'give';
+  openCard({
+    title: isGive ? '把伞递过去' : '敲一敲伞沿',
+    body: `
+      <p class="profile-bio">${isGive
+        ? '对方也向您递伞时，你们会成为「同伞之交」，那时才看得到彼此的 UID。'
+        : '轻轻敲一下，对方会在「箱子」里看到有人来过。'}</p>
+      <label class="field"><span>留句话<em>可选，最多 200 字</em></span>
+        <textarea id="touch-note" maxlength="200" rows="4"
+          placeholder="可以留 QQ / 微信 / 游戏 ID，也可以只是打个招呼"></textarea></label>
+      <p class="form-fine">留言会和这次${isGive ? '递伞' : '敲伞'}一起送到对方那里。
+        请注意：对方能看到这段文字，请不要写不方便公开的内容。</p>`,
+    foot: `<button class="btn btn-ghost" data-cancel>算了</button>
+      <button class="btn ${isGive ? 'btn-primary' : 'btn-ghost'}" data-send>${isGive ? '递过去' : '敲一下'}</button>`,
+    onMount: (body, foot) => {
+      foot.querySelector('[data-cancel]').onclick = closeCard;
+      const ta = body.querySelector('#touch-note');
+      setTimeout(() => { try { ta.focus(); } catch { /* 忽略 */ } }, 120);
+      foot.querySelector('[data-send]').onclick = async () => {
+        const note = ta.value.trim();
+        try {
+          const r = await api('/api/touch', { method: 'POST', body: { markerId: m.id, kind, note } });
+          closeCard();
+          if (r.friend) toast('你们互相递了伞，成了同伞之交', 'ok');
+          else if (isGive) toast(note ? '伞和留言都递过去了' : '伞递过去了，等 TA 也递回来', 'ok');
+          else toast(note ? '敲了一下，留言也送到了' : '轻轻碰了一下，TA 只知道伞动了一下');
+        } catch (err) { toast(err.message, 'warn'); }
+      };
+    }
+  });
+}
+
+/** 举报一条留言（只有收件人能举报） */
+function openReportTouch(x) {
+  openCard({
+    title: '举报这条留言',
+    body: `
+      <p class="profile-bio">来自 ${esc(x.from_nickname)} 的留言：</p>
+      <blockquote class="near-note">${esc(x.note || '')}</blockquote>
+      <label class="field"><span>原因</span>
+        <select id="tn-reason">
+          <option>广告 / 引流</option>
+          <option>诈骗 / 赌博 / 色情</option>
+          <option>辱骂或骚扰</option>
+          <option>要求线下见面等不当请求</option>
+          <option>其他（请在下面说明）</option>
+        </select></label>
+      <label class="field"><span>补充说明<em>选「其他」时必填</em></span>
+        <textarea id="tn-detail" maxlength="500" rows="3" placeholder="简单说一下情况"></textarea></label>
+      <p class="form-fine">举报会直接进入人工审核。留言内容会一并提交给站长。</p>`,
+    foot: `<button class="btn btn-ghost" data-cancel>算了</button>
+      <button class="btn btn-danger" data-ok>提交</button>`,
+    onMount: (body, foot) => {
+      foot.querySelector('[data-cancel]').onclick = closeCard;
+      foot.querySelector('[data-ok]').onclick = async () => {
+        const reason = body.querySelector('#tn-reason').value;
+        const detail = body.querySelector('#tn-detail').value.trim();
+        if (reason.indexOf('其他') >= 0 && !detail) {
+          toast('选「其他」时请简单说明一下情况', 'warn');
+          return;
+        }
+        try {
+          await api('/api/report', {
+            method: 'POST',
+            body: { targetType: 'touch', targetId: String(x.id), reason, detail }
+          });
+          closeCard();
+          toast('举报收到了，站长会尽快处理', 'ok');
+        } catch (err) { toast(err.message, 'warn'); }
+      };
+    }
+  });
 }
 
 function openReport(m) {
@@ -787,6 +886,12 @@ async function openCase() {
   if (!S.me) { openLogin(); return; }
   let data;
   try { data = await api('/api/me'); } catch (err) { toast(err.message, 'warn'); return; }
+  // 打开箱子即视为看过互动
+  if (data.unread) {
+    api('/api/touches/seen', { method: 'POST' }).catch(() => {});
+    S.unread = 0;
+    updateTallyDots();
+  }
   S.consent = data.consent;
   const u = data.user;
 
@@ -818,8 +923,12 @@ async function openCase() {
         <span class="near-main">
           <span class="near-name">${esc(x.from_nickname)}<span class="badge-server">${esc(x.from_server_name || '')}</span></span>
           <span class="near-sub">${x.kind === 'give' ? '向您递了伞' : '敲了敲您的伞沿'} · ${fmtAgo(x.created_at)}</span>
+          ${x.note ? `<span class="near-note">“${esc(x.note)}”</span>` : ''}
         </span>
-        <button class="btn btn-small" data-touch-go="${i}" ${x.from_lat ? '' : 'disabled'}>去看看</button>
+        <span class="touch-acts">
+          ${x.note ? `<button class="link-btn" data-touch-report="${i}" title="举报这条留言">举报</button>` : ''}
+          <button class="btn btn-small" data-touch-go="${i}" ${x.from_lat ? '' : 'disabled'}>去看看</button>
+        </span>
       </li>`).join('')
     : `<li class="near-item"><span class="near-sub">还没有人来敲伞。把伞撑在人多的地方试试。</span></li>`;
 
@@ -896,6 +1005,13 @@ async function openCase() {
           toast(`来到了 ${f.nickname} 的伞边`);
         };
       });
+      body.querySelectorAll('[data-touch-report]').forEach((b) => {
+        b.onclick = () => {
+          const x = touchMap[Number(b.dataset.touchReport)];
+          if (x) openReportTouch(x);
+        };
+      });
+
       body.querySelectorAll('[data-touch-go]').forEach((b) => {
         b.onclick = () => {
           const x = touchMap[Number(b.dataset.touchGo)];
@@ -1287,6 +1403,8 @@ async function refreshNoticeDot() {
 }
 
 /** 公告正文：先转义，再把 [[img:ID]] 换成图片 */
+const NOTICE_CAT_LABEL = { notice: '公告', maintenance: '维护公告', feature: '功能上新', dev: '开发者提醒' };
+
 function renderNoticeBody(raw) {
   return esc(raw)
     .replace(/\n/g, '<br>')
@@ -1307,24 +1425,41 @@ async function openNotices() {
     const d = new Date(iso);
     return `${d.getMonth() + 1}月${d.getDate()}日 ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
   };
-  const body = notices.length
-    ? `<div class="notice-list">${notices.map((n) => `
+  const CATS = [['all', '全部'], ['maintenance', '维护公告'], ['feature', '功能上新'], ['dev', '开发者提醒'], ['notice', '其他']];
+
+  const renderList = (cat) => {
+    const list = cat === 'all' ? notices : notices.filter((n) => (n.category || 'notice') === cat);
+    if (!list.length) return `<p class="profile-bio">这个分类下还没有公告。</p>`;
+    return `<div class="notice-list">${list.map((n) => `
         <article class="notice ${esc(n.level || 'info')}">
           <div class="notice-head">
             <strong>${esc(n.title)}</strong>
+            ${n.category && n.category !== 'notice'
+              ? `<em class="notice-cat">${esc(NOTICE_CAT_LABEL[n.category] || '')}</em>`
+              : ''}
             ${n.pinned ? '<em class="pin">置顶</em>' : ''}
             <time>${fmt(n.created_at)}</time>
           </div>
           <p>${renderNoticeBody(n.body)}</p>
-        </article>`).join('')}</div>`
-    : `<p class="profile-bio">还没有公告。</p>`;
+        </article>`).join('')}</div>`;
+  };
+
+  const chips = `<div class="notice-cats">${CATS
+    .map((c) => `<button class="chip${c[0] === 'all' ? ' on' : ''}" data-cat="${c[0]}" type="button">${c[1]}</button>`)
+    .join('')}</div>`;
 
   openCard({
     title: '公告',
-    body,
+    body: `${chips}<div id="notice-host">${renderList('all')}</div>`,
     foot: `<button class="btn btn-ghost" data-close>关上</button>`,
     onMount: (bodyEl, foot) => {
       foot.querySelector('[data-close]').onclick = closeCard;
+      bodyEl.querySelectorAll('[data-cat]').forEach((b) => {
+        b.onclick = () => {
+          bodyEl.querySelectorAll('[data-cat]').forEach((x) => x.classList.toggle('on', x === b));
+          bodyEl.querySelector('#notice-host').innerHTML = renderList(b.dataset.cat);
+        };
+      });
     }
   });
 
