@@ -248,3 +248,43 @@ table.admin-table td.wrap { white-space: normal; min-width: 240px; max-width: 42
   line-height: 1.7;
   font-size: 14px;
 }
+
+/* 地图预览弹层（管理台内，不跳页） */
+#map-preview {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(30, 22, 10, 0.46);
+  backdrop-filter: blur(2px);
+}
+#map-preview .mp-panel {
+  display: flex;
+  flex-direction: column;
+  width: min(1100px, 100%);
+  height: min(760px, 100%);
+  background: var(--paper, #EFE4CC);
+  border: 1px solid #B9A57E;
+  border-radius: 4px;
+  box-shadow: 0 24px 60px rgba(40, 28, 12, 0.34);
+  overflow: hidden;
+}
+#map-preview .mp-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-bottom: 1px solid rgba(44, 36, 25, 0.16);
+  font-size: 12px;
+  color: #5C4E3A;
+}
+#map-preview .mp-coord { flex: 1 1 auto; font-variant-numeric: tabular-nums; }
+#map-preview .mp-frame { flex: 1 1 auto; width: 100%; border: 0; background: #EFE4CC; }
+
+@media (max-width: 720px) {
+  #map-preview { padding: 10px; }
+  #map-preview .mp-panel { height: min(88vh, 640px); }
+}

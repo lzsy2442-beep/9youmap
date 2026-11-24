@@ -1,4 +1,4 @@
-// 管理台：概览 / 公告 / 用户 / 标记 / 举报
+﻿// 管理台：概览 / 公告 / 用户 / 标记 / 举报
 const $ = (sel, root = document) => root.querySelector(sel);
 const nz = (v, d) => (v === null || v === undefined ? d : v);
 const esc = (s) => String(nz(s, '')).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -386,10 +386,7 @@ async function loadMarkers(page = state.markers.page, q = state.markers.q, serve
   $('#next-page').onclick = () => loadMarkers(page + 1, q, server);
 
   document.querySelectorAll('[data-fly]').forEach((b) => {
-    b.onclick = () => {
-      // 同一标签页跳到地图并定位，不新开窗口
-      location.href = `/?fly=${encodeURIComponent(b.dataset.fly)}`;
-    };
+    b.onclick = () => openMapPreview(b.dataset.fly);
   });
 
   document.querySelectorAll('[data-delmarker]').forEach((b) => {
@@ -624,3 +621,28 @@ async function loadWhitelist() {
 }
 
 boot();
+
+// ── 地图预览：在管理台内弹层，不离开页面 ────────────────────
+function openMapPreview(fly) {
+  const old = document.getElementById('map-preview');
+  if (old) old.remove();
+  const [lat, lng] = String(fly).split(',');
+  const wrap = document.createElement('div');
+  wrap.id = 'map-preview';
+  wrap.innerHTML = `
+    <div class="mp-panel">
+      <div class="mp-bar">
+        <span class="mp-coord">${esc(lat)}, ${esc(lng)}</span>
+        <a class="admin-btn small ghost" href="/?fly=${encodeURIComponent(fly)}" target="_blank" rel="noopener">在新标签打开</a>
+        <button class="admin-btn small ghost" id="mp-close" type="button">关闭</button>
+      </div>
+      <iframe class="mp-frame" src="/?fly=${encodeURIComponent(fly)}&embed=1" title="地图预览" loading="lazy"></iframe>
+    </div>`;
+  document.body.appendChild(wrap);
+  const close = () => wrap.remove();
+  wrap.querySelector('#mp-close').onclick = close;
+  wrap.addEventListener('click', (e) => { if (e.target === wrap) close(); });
+  document.addEventListener('keydown', function esc_(e) {
+    if (e.key === 'Escape') { close(); document.removeEventListener('keydown', esc_); }
+  });
+}

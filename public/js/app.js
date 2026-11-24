@@ -122,9 +122,11 @@ async function boot() {
   S.settings = loadSettings();
   initMap();
 
-  // 管理台「传送」用：/?fly=lat,lng
+  // 管理台「地图预览」用：/?fly=lat,lng&embed=1
   try {
-    const fly = new URLSearchParams(location.search).get('fly');
+    const qs = new URLSearchParams(location.search);
+    if (qs.get('embed') === '1') document.body.classList.add('embed');
+    const fly = qs.get('fly');
     if (fly) {
       const parts = fly.split(',').map(Number);
       if (parts.length === 2 && isFinite(parts[0]) && isFinite(parts[1])) {

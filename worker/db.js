@@ -174,12 +174,16 @@ export function createStore(env) {
       }
 
       const dup = await first(
-        'SELECT 1 AS x FROM touches WHERE from_user = ? AND to_marker = ? AND kind = ? AND created_at > ?',
+        'SELECT id FROM touches WHERE from_user = ? AND to_marker = ? AND kind = ? AND created_at > ?',
         fromUser, markerId, kind, day
       );
+      const text = String(note || '').trim().slice(0, 200);
       if (!dup) {
-        await run('INSERT INTO touches (from_user,to_marker,to_user,kind,created_at) VALUES (?,?,?,?,?)',
-          fromUser, markerId, m.user_id, kind, now());
+        await run('INSERT INTO touches (from_user,to_marker,to_user,kind,note,seen,created_at) VALUES (?,?,?,?,?,0,?)',
+          fromUser, markerId, m.user_id, kind, text, now());
+      } else if (text) {
+        // 同一天同一动作再发一次，视为补充/更新留言
+        await run('UPDATE touches SET note = ? WHERE id = ?', text, dup.id);
       }
 
       let friend = false;

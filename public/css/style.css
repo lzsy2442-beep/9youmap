@@ -1336,3 +1336,12 @@ body[data-weather="snow"] #map { filter: saturate(0.82) brightness(0.97) contras
 blockquote.near-note {
   margin: 8px 0 12px;
 }
+
+/* embed=1：给管理台的「地图预览」用，只留地图和缩放控件 */
+body.embed > .rail,
+body.embed > .dock,
+body.embed > .foot,
+body.embed > #panel,
+body.embed .chrome-top,
+body.embed .wx-layer { display: none !important; }
+body.embed .zoom-box { bottom: 16px; }
