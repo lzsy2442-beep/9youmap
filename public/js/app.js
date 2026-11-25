@@ -569,6 +569,44 @@ function doTouch(m, kind) {
   });
 }
 
+/** 注销账号：输入「注销」确认，删除后不可恢复 */
+function openDeleteAccount() {
+  openCard({
+    title: '注销账号',
+    body: `
+      <p class="profile-bio">这个操作<strong>不可撤销</strong>。会删除：</p>
+      <ul class="guide-steps">
+        <li>您的账号资料（昵称、渠道服、城市、个性签名）</li>
+        <li>所有的伞与金兔子</li>
+        <li>同伞之交关系，以及所有递伞 / 敲伞沿记录与留言</li>
+      </ul>
+      <p class="tip">注销后，同一个邮箱可以重新注册，但那是全新的账号，旧数据找不回来。</p>
+      <label class="field"><span>请输入「注销」两个字确认</span>
+        <input id="del-confirm" maxlength="4" autocomplete="off" placeholder="注销"></label>`,
+    foot: `<button class="btn btn-ghost" data-cancel>算了</button>
+      <button class="btn btn-danger" data-ok>确认注销</button>`,
+    onMount: (body, foot) => {
+      foot.querySelector('[data-cancel]').onclick = closeCard;
+      foot.querySelector('[data-ok]').onclick = async () => {
+        const v = body.querySelector('#del-confirm').value.trim();
+        if (v !== '注销') {
+          toast('请输入「注销」两个字', 'warn');
+          return;
+        }
+        try {
+          await api('/api/me', { method: 'DELETE', body: { confirm: '注销' } });
+          S.me = null; S.consent = null; S.unread = 0;
+          closeCard();
+          renderAuthState();
+          updateTallyDots();
+          reloadAll();
+          toast('账号已注销，感谢来过', 'ok');
+        } catch (err) { toast(err.message, 'warn'); }
+      };
+    }
+  });
+}
+
 /** 举报一条留言（只有收件人能举报） */
 function openReportTouch(x) {
   openCard({
@@ -988,9 +1026,16 @@ async function openCase() {
         <label class="consent"><input type="checkbox" id="p-location" ${data.consent.state.location ? 'checked' : ''}><span>在公开地图展示我的位置</span></label>
         <label class="consent"><input type="checkbox" id="p-uid" ${data.consent.state.uid ? 'checked' : ''}><span>向同服用户展示我的 UID</span></label>
       </div>
-      <p class="tip">关掉位置展示后，您的标记会立刻从地图上消失（数据保留，可以再打开）。</p>`,
+      <p class="tip">关掉位置展示后，您的标记会立刻从地图上消失（数据保留，可以再打开）。</p>
+
+      <h3 style="font-size:13px;margin:20px 0 6px">账号</h3>
+      <p class="tip">注销会<strong>永久删除</strong>您的账号、伞、金兔子、同伞之交和留言，无法恢复。
+        想保留数据只是暂时不用，请用上面的「退出登录」。</p>
+      <p><button class="link-btn" id="me-delete" type="button">注销账号</button></p>`,
     foot: `<button class="btn btn-ghost" data-logout>退出登录</button><button class="btn btn-primary" data-save>保存</button>`,
     onMount: (body, foot) => {
+      const delBtn = body.querySelector('#me-delete');
+      if (delBtn) delBtn.onclick = () => openDeleteAccount();
       const favPicker = mountCharPicker(body.querySelector('#me-fav-picker'), charGroups, u.favChar);
       body.querySelectorAll('[data-del]').forEach((b) => {
         b.onclick = async () => {
