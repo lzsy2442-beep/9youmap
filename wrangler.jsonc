@@ -1,6 +1,5 @@
 {
   // Cloudflare Worker + 静态资源（Pages/Workers Assets）
-  // 部署前把 database_id 换成 `wrangler d1 create jiuyoumap` 给出的值
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "jiuyoumap",
   "main": "worker/index.js",
@@ -21,12 +20,13 @@
     }
   ],
 
-  // 普通变量；密钥用 `wrangler secret put` 单独设置
+  // 普通变量（Git 部署会按本文件重建）；密钥只放控制台 Secret
+  // 白名单不在这里：已存进数据库 settings.test_emails，管理台维护
   "vars": {
     "TDT_TK": "fe66986378af3f8ecbe276808919c8b9",
     "ADMIN_EMAIL": "suyu060416@foxmail.com",
-    "MAIL_FROM": "9友地图 <no-reply@jiyoumap.top>",
-    "ALIYUN_DM_ACCOUNT": "no-reply@jiyoumap.top",
+    "MAIL_FROM": "9友地图 <no-reply@jiuyoumap.top>",
+    "ALIYUN_DM_ACCOUNT": "no-reply@jiuyoumap.top",
     "ALIYUN_DM_AK_ID": "LTAI5t8BY4q42cXRCkdwyMvU"
   },
 
