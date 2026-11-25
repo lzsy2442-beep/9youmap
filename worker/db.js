@@ -515,6 +515,15 @@ export function createStore(env) {
       return first('SELECT id, from_user, to_user, to_marker, kind, note FROM touches WHERE id = ?', id);
     },
 
+    /** 注销账号：删掉这个人的全部数据 */
+    async deleteUser(userId) {
+      await run('DELETE FROM markers WHERE user_id = ?', userId);
+      await run('DELETE FROM touches WHERE from_user = ? OR to_user = ?', userId, userId);
+      await run('DELETE FROM friends WHERE a = ? OR b = ?', userId, userId);
+      await run('UPDATE reports SET from_user = ? WHERE from_user = ?', '', userId);
+      await run('DELETE FROM users WHERE id = ?', userId);
+    },
+
     SERVER_MAP
   };
 

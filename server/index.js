@@ -16,7 +16,9 @@ import { PROVINCES, CITY_POINTS, REGION_STATS, getRegion, regionLabel } from './
 import { issueSession, clearCookie, readSession, hashCode, newCode, sendCodeMail, mailConfigured, CODE_TTL, CODE_COOLDOWN, MAX_TRIES } from './auth.js';
 import { getWeather } from './weather.js';
 import { renderMarkdown } from './md.js';
+import { checkText } from './words.js';
 
+store.migrate();
 store.seedIfEmpty();
 store.seedNotices();
 if (process.env.ADMIN_EMAIL) {
@@ -108,6 +110,7 @@ function publicUser(u) {
     nickname: u.nickname,
     avatar: u.avatar,
     bio: u.bio,
+    bioPublic: !!u.bio_public,
     favChar: u.fav_char,
     serverKey: u.server_key,
     serverName: SERVER_MAP.get(u.server_key)?.name || u.server_key,
@@ -138,6 +141,7 @@ function publicMarker(m, viewer) {
     serverShort: server?.short || '?',
     serverColor: server?.color || '#B08A4F',
     uid: m.uid_public ? (m.uid_game || '') : '',
+    bio: m.bio_public ? (m.bio || '') : '',
     sameServer,
     isMine: viewer ? viewer.id === m.user_id : false,
     createdAt: m.created_at
@@ -196,7 +200,7 @@ function legalPageHtml(slug) {
     `<a href="/legal/${d.slug}" class="${d.slug === slug ? 'on' : ''}">${d.title}</a>`
   ).join('');
   return `<!doctype html>
-<html lang="zh-CN"><head>
+<html lang="zh-CN" class="legal-html"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${doc.title} · ${SITE_NAME}</title>
 <link rel="stylesheet" href="/css/style.css">
@@ -269,8 +273,21 @@ const server = http.createServer(async (req, res) => {
     }
 
     // ── 管理后台 ────────────────────────────────────────────
-    if (path.startsWith('/api/admin/')) {
-      const uid = readSession(req);
+    // ── 图片读取（公开）─────────────────────────────────
+    if (path.startsWith('/api/media/') && method === 'GET') {
+      const id = path.slice('/api/media/'.length);
+      const row = store.getMedia(id);
+      if (!row) return fail(res, 404, 'not_found', '图片不存在');
+      const buf = Buffer.from(row.data, 'base64');
+      res.writeHead(200, {
+        'Content-Type': row.mime,
+        'Content-Length': String(buf.length),
+        'Cache-Control': 'public, max-age=31536000, immutable'
+      });
+      return res.end(buf);
+    }
+
+    if (path.startsWith('/api/admin/')) {      const uid = readSession(req);
       const viewer = uid ? store.getUserById(uid) : null;
       if (!viewer) return fail(res, 401, 'unauthorized', '请先登录');
 
@@ -298,6 +315,7 @@ const server = http.createServer(async (req, res) => {
         const notice = store.addNotice({
           title, body: text,
           level: ['info', 'warn', 'important'].includes(body.level) ? body.level : 'info',
+          category: store.NOTICE_CATEGORIES[body.category] ? body.category : 'notice',
           pinned: !!body.pinned,
           expiresAt: body.expiresAt || null
         });
@@ -329,12 +347,71 @@ const server = http.createServer(async (req, res) => {
       }
       if (mUser && method === 'PATCH') {
         const body = await readBody(req);
-        if (mUser[1] === viewer.id && body.role && body.role !== 'site_admin' && viewer.role === 'site_admin') {
-          return fail(res, 400, 'bad_request', '不能给自己降权');
+        const target = store.getUserById(mUser[1]);
+        if (!target) return fail(res, 404, 'not_found', '找不到这个用户');
+
+        // ── 权限边界 ────────────────────────────────────────
+        // 1. 只有站长能改角色；管理员只能处理普通用户
+        if (body.role !== undefined && viewer.role !== 'site_admin') {
+          return fail(res, 403, 'forbidden', '只有站长可以调整角色');
         }
+        // 2. 站长这个角色谁都不能改（包括站长自己）
+        if (body.role !== undefined && target.role === 'site_admin') {
+          return fail(res, 403, 'forbidden', '不能修改站长');
+        }
+        // 3. 不能把别人也提成站长
+        if (body.role === 'site_admin') {
+          return fail(res, 403, 'forbidden', '站长只有一个，暂不支持转让');
+        }
+        // 4. 站长不能被封禁；管理员只有站长能动
+        if (body.banned !== undefined) {
+          if (target.role === 'site_admin') return fail(res, 403, 'forbidden', '不能封禁站长');
+          if (target.role === 'admin' && viewer.role !== 'site_admin') {
+            return fail(res, 403, 'forbidden', '只有站长可以处置管理员');
+          }
+        }
+
         const u = store.adminSetUser(mUser[1], body);
         if (!u) return fail(res, 400, 'bad_request', '没有可更新的字段');
         return json(res, 200, { ok: true, user: u });
+      }
+
+      // ── 图片（上传放在管理区块内，读取是公开的）─────
+
+
+      if (path === '/api/admin/media' && method === 'POST') {
+        let body;
+        try {
+          body = await readBody(req, 2 * 1024 * 1024);
+        } catch (err) {
+          return fail(res, 413, 'too_big', '图片太大，请压缩后重试');
+        }
+        const dataUrl = String(body.dataUrl || '');
+        const m = /^data:(image\/[a-z+]+);base64,(.+)$/i.exec(dataUrl);
+        if (!m) return fail(res, 400, 'bad_image', '图片格式不对');
+        const mime = m[1].toLowerCase();
+        if (!['image/jpeg', 'image/png', 'image/webp', 'image/gif'].includes(mime)) {
+          return fail(res, 400, 'bad_type', '只支持 JPG / PNG / WebP / GIF');
+        }
+        const b64 = m[2];
+        if (b64.length > 900 * 1024) return fail(res, 413, 'too_big', '图片太大，请压缩后重试');
+        const id = randomUUID().replace(/-/g, '').slice(0, 16);
+        store.saveMedia({ id, mime, data: b64, size: Math.floor(b64.length * 0.75) });
+        return json(res, 200, { ok: true, url: `/api/media/${id}` });
+      }
+
+      // ── 测试白名单 ──────────────────────────────────────
+      if (path === '/api/admin/whitelist' && method === 'GET') {
+        const emails = store.readWhitelist();
+        const envList = String(process.env.TEST_EMAILS || '')
+          .split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
+        return json(res, 200, { ok: true, emails, envEmails: envList, raw: store.getSetting('test_emails') || '' });
+      }
+
+      if (path === '/api/admin/whitelist' && method === 'PUT') {
+        const body = await readBody(req);
+        const list = store.writeWhitelist(body.raw || '');
+        return json(res, 200, { ok: true, emails: list, count: list.length });
       }
 
       if (path === '/api/admin/markers' && method === 'GET') {
@@ -423,7 +500,10 @@ const server = http.createServer(async (req, res) => {
       if (kind === 'rabbit' && store.countRabbits(uid) >= LIMITS.rabbitsPerUser) {
         return fail(res, 409, 'RABBIT_LIMIT', `最多放 ${LIMITS.rabbitsPerUser} 只金兔子`);
       }
-      const m = store.createMarker({ userId: uid, kind, lat, lng, label: body.label || '' });
+      const labelText = String(body.label || '').slice(0, 20);
+      const wl = checkText(labelText);
+      if (wl.hit) return fail(res, 400, 'blocked_content', wl.message);
+      const m = store.createMarker({ userId: uid, kind, lat, lng, label: labelText });
       broadcast({ type: 'feed' });
       return json(res, 200, { ok: true, marker: publicMarker({ ...m, nickname: viewer.nickname, server_key: viewer.server_key }, viewer) });
     }
@@ -444,7 +524,11 @@ const server = http.createServer(async (req, res) => {
       if (!uid) return fail(res, 401, 'unauthorized', '请先登录');
       const body = await readBody(req);
       const kind = body.kind === 'give' ? 'give' : 'knock';
-      const result = store.addTouch(uid, String(body.markerId || ''), kind);
+      const noteText = String(body.note || '');
+      const w1 = checkText(noteText);
+      if (w1.hit) return fail(res, 400, 'blocked_content', w1.message);
+
+      const result = store.addTouch(uid, String(body.markerId || ''), kind, noteText);
       if (!result.ok) {
         const map = {
           marker_not_found: [404, '找不到对方'],
@@ -471,8 +555,19 @@ const server = http.createServer(async (req, res) => {
         const wait = Math.ceil((CODE_COOLDOWN * 1000 - (Date.now() - existing.sent_at)) / 1000);
         return fail(res, 429, 'cooldown', `请 ${wait} 秒后再试`, { retryAfter: wait });
       }
+      // 测试白名单：数据库优先，环境变量兜底。命中则不发邮件，直接把码返回给前端。
+      const envWhite = String(process.env.TEST_EMAILS || '')
+        .split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
+      const isWhite = store.readWhitelist().includes(email) || envWhite.includes(email);
+
       const code = newCode();
       store.setCode(email, hashCode(email, code), CODE_TTL);
+
+      if (isWhite) {
+        console.log(`[mail:test] ${email} 命中白名单，未发送邮件`);
+        return json(res, 200, { ok: true, delivered: false, devCode: code, ttl: CODE_TTL, testMode: true });
+      }
+
       let send;
       try {
         send = await sendCodeMail(email, code);
@@ -502,7 +597,9 @@ const server = http.createServer(async (req, res) => {
         store.bumpCodeTry(email);
         return fail(res, 400, 'code_wrong', '验证码不对');
       }
-      store.clearCode(email);
+      // 注意：验证码要等登录真正成功后再生效作废。
+      // 新用户第一次提交只会拿到 PROFILE_REQUIRED（还没建号），这时清掉验证码
+      // 会让 TA 补完资料后再提交时提示「请先获取验证码」——必须重新取码。
 
       const consents = body.consents || {};
       const missing = REQUIRED_CONSENTS.filter((t) => consents[t] !== true);
@@ -510,8 +607,15 @@ const server = http.createServer(async (req, res) => {
       let user = store.getUserByEmail(email);
       const isNew = !user;
 
-      if (isNew && missing.length) {
-        return fail(res, 428, 'CONSENT_REQUIRED', '请先同意相关条款', { missing });
+      // 新用户才需要「资料 + 同意」；老用户只凭邮箱 + 验证码即可登录，
+      // 前端收到 PROFILE_REQUIRED 再展开那段表单。
+      if (isNew) {
+        const serverKey0 = String(body.serverKey || '');
+        const cityCode0 = String(body.cityCode || '');
+        const nickname0 = String(body.nickname || '').trim();
+        if (missing.length || !serverKey0 || !cityCode0 || nickname0.length < 2) {
+          return fail(res, 428, 'PROFILE_REQUIRED', '新用户需要完善资料', { missing, needProfile: true });
+        }
       }
 
       if (isNew) {
@@ -532,6 +636,7 @@ const server = http.createServer(async (req, res) => {
         else if (consents[type] === false) store.recordConsent({ userId: user.id, docType: type, action: 'withdraw', ip: clientIp(req), ua: req.headers['user-agent'] });
       }
       store.touchLastSeen(user.id);
+      store.clearCode(email); // 真正登录成功后才作废验证码
 
       const session = issueSession(user.id);
       const consent = userConsentView(user.id);
@@ -539,7 +644,8 @@ const server = http.createServer(async (req, res) => {
         ok: true,
         user: publicUser(user),
         consent,
-        needsConsent: consent.needs
+        needsConsent: consent.needs,
+        isNew // 首次注册：前端据此强推使用指南
       }, { 'set-cookie': session.cookie });
     }
 
@@ -552,14 +658,52 @@ const server = http.createServer(async (req, res) => {
       const uid = readSession(req);
       if (!uid) return fail(res, 401, 'unauthorized', '请先登录');
       const u = store.getUserById(uid);
+      if (!u) return fail(res, 401, 'unauthorized', '账号已不存在，请重新登录');
       return json(res, 200, {
         ok: true,
         user: { ...publicUser(u), uid: u.uid_game || '' },
         consent: userConsentView(uid),
         markers: store.listUserMarkers(uid),
         friends: store.listFriends(uid),
-        friendCount: store.countFriends(uid)
+        friendCount: store.countFriends(uid),
+        touches: store.listTouchesReceived(uid, 30),
+        unread: store.countUnreadTouches(uid)
       });
+    }
+
+    if (path === '/api/touches' && method === 'GET') {
+      const uid = readSession(req);
+      if (!uid) return fail(res, 401, 'unauthorized', '请先登录');
+      return json(res, 200, {
+        ok: true,
+        touches: store.listTouchesReceived(uid, 50),
+        unread: store.countUnreadTouches(uid)
+      });
+    }
+
+    if (path === '/api/touches/seen' && method === 'POST') {
+      const uid = readSession(req);
+      if (!uid) return fail(res, 401, 'unauthorized', '请先登录');
+      const n = store.markTouchesSeen(uid);
+      return json(res, 200, { ok: true, cleared: n });
+    }
+
+    // 注销账号：需要显式确认，删除后不可恢复
+    if (path === '/api/me' && method === 'DELETE') {
+      const uid = readSession(req);
+      if (!uid) return fail(res, 401, 'unauthorized', '请先登录');
+      const body = await readBody(req);
+      if (String(body.confirm || '') !== '注销') {
+        return fail(res, 400, 'need_confirm', '请输入「注销」两个字确认');
+      }
+      try {
+        store.deleteUser(uid);
+      } catch (err) {
+        console.error('[account] 注销失败：', err.message);
+        return fail(res, 500, 'delete_failed', '注销失败，请稍后再试或邮件联系站长');
+      }
+      broadcast({ type: 'feed' });
+      return json(res, 200, { ok: true });
     }
 
     if (path === '/api/me' && method === 'PATCH') {
@@ -572,9 +716,17 @@ const server = http.createServer(async (req, res) => {
         if (n.length < 2) return fail(res, 400, 'bad_nickname', '昵称至少 2 个字');
         const other = store.getUserByNickname(n);
         if (other && other.id !== uid) return fail(res, 409, 'nickname_taken', '这个昵称已经有人用了');
+        const wn = checkText(n);
+        if (wn.hit) return fail(res, 400, 'blocked_content', wn.message);
         patch.nickname = n;
       }
-      if (body.bio !== undefined) patch.bio = String(body.bio).slice(0, 80);
+      if (body.bio !== undefined) {
+        const bioText = String(body.bio).slice(0, 80);
+        const wb = checkText(bioText);
+        if (wb.hit) return fail(res, 400, 'blocked_content', wb.message);
+        patch.bio = bioText;
+      }
+      if (body.bioPublic !== undefined) patch.bio_public = body.bioPublic ? 1 : 0;
       if (body.favChar !== undefined) patch.fav_char = String(body.favChar).slice(0, 20);
       if (body.uidGame !== undefined) patch.uid_game = String(body.uidGame).replace(/[^0-9]/g, '').slice(0, 12);
       if (body.uidPublic !== undefined) patch.uid_public = body.uidPublic ? 1 : 0;
@@ -614,10 +766,21 @@ const server = http.createServer(async (req, res) => {
       const uid = readSession(req) || '';
       const body = await readBody(req);
       if (!rateLimit(req, 'report', 10, 3600e3)) return fail(res, 429, 'rate_limited', '举报太频繁');
+
+      const targetType = String(body.targetType || 'marker');
+      // 留言举报：只有收到这条留言的人才能举报
+      if (targetType === 'touch') {
+        if (!uid) return fail(res, 401, 'unauthorized', '请先登录');
+        const touch = store.getTouch(String(body.targetId || ''));
+        if (!touch) return fail(res, 404, 'not_found', '这条互动已经不存在了');
+        if (touch.to_user !== uid) return fail(res, 403, 'forbidden', '只能举报发给您的留言');
+      }
+
       store.addReport({
-        targetType: String(body.targetType || 'marker'),
+        targetType,
         targetId: String(body.targetId || ''),
-        reason: String(body.reason || '').slice(0, 500),
+        reason: String(body.reason || '').slice(0, 60),
+        detail: String(body.detail || '').slice(0, 500),
         fromUser: uid
       });
       return json(res, 200, { ok: true });
@@ -661,9 +824,12 @@ const server = http.createServer(async (req, res) => {
       });
     }
 
-    // ── 管理页面 ────────────────────────────────────────────
+    // ── 独立页面（无扩展名的地址）────────────────────────────
     if (method === 'GET' && (path === '/admin' || path === '/admin/')) {
       if (serveStatic(req, res, '/admin.html')) return;
+    }
+    if (method === 'GET' && (path === '/guide' || path === '/guide/')) {
+      if (serveStatic(req, res, '/guide.html')) return;
     }
 
     // ── 静态 ────────────────────────────────────────────────
@@ -702,3 +868,10 @@ server.listen(PORT, HOST, () => {
   console.log('');
 });
 
+// 本地调试服务兜底：单个请求出错不要整个进程退出
+process.on('unhandledRejection', (err) => {
+  console.error('[unhandledRejection]', err && err.message ? err.message : err);
+});
+process.on('uncaughtException', (err) => {
+  console.error('[uncaughtException]', err && err.message ? err.message : err);
+});

@@ -13,6 +13,7 @@ const NOTICE_CATEGORIES = {
 };
 import { LEGAL_TEXT, LEGAL_HASHES } from './data-legal.js';
 import { SCHEMA_SQL, SEED_SQL } from './data-schema.js';
+import { checkText } from '../server/words.js';
 import { createStore } from './db.js';
 import { issueSession, readSession, clearCookie, hashCode, newCode } from './session.js';
 import { sendMailAliyun, aliyunMailConfigFromEnv } from './mail-aliyun.js';
@@ -440,7 +441,10 @@ export default {
         if (kind === 'rabbit' && (await store.countRabbits(viewer.id)) >= LIMITS.rabbitsPerUser) {
           return fail(409, 'RABBIT_LIMIT', `最多放 ${LIMITS.rabbitsPerUser} 只金兔子`);
         }
-        const m = await store.createMarker({ userId: viewer.id, kind, lat, lng, label: b.label || '' });
+        const labelText = String(b.label || '').slice(0, 20);
+      const wl = checkText(labelText);
+      if (wl.hit) return fail(400, 'blocked_content', wl.message);
+      const m = await store.createMarker({ userId: viewer.id, kind, lat, lng, label: labelText });
         return json({ ok: true, marker: publicMarker({ ...m, nickname: viewer.nickname, server_key: viewer.server_key }, viewer) });
       }
 
@@ -457,7 +461,10 @@ export default {
         if (!viewer) return fail(401, 'unauthorized', '请先登录');
         const b = await body();
         const kind = b.kind === 'give' ? 'give' : 'knock';
-        const r = await store.addTouch(viewer.id, String(b.markerId || ''), kind, String(b.note || ''));
+        const noteText = String(b.note || '');
+        const w1 = checkText(noteText);
+        if (w1.hit) return fail(400, 'blocked_content', w1.message);
+        const r = await store.addTouch(viewer.id, String(b.markerId || ''), kind, noteText);
         if (!r.ok) {
           const map = {
             marker_not_found: [404, '找不到对方'], self: [400, '不能碰自己'],
@@ -593,6 +600,22 @@ export default {
         return json({ ok: true });
       }
 
+      // 注销账号：需要显式确认
+      if (path === '/api/me' && method === 'DELETE') {
+        if (!viewer) return fail(401, 'unauthorized', '请先登录');
+        const b = await body();
+        if (String(b.confirm || '') !== '注销') {
+          return fail(400, 'need_confirm', '请输入「注销」两个字确认');
+        }
+        try {
+          await store.deleteUser(viewer.id);
+        } catch (err) {
+          console.error('[account] 注销失败：', err && err.message);
+          return fail(500, 'delete_failed', '注销失败，请稍后再试或邮件联系站长');
+        }
+        return json({ ok: true });
+      }
+
       if (path === '/api/me' && method === 'PATCH') {
         if (!viewer) return fail(401, 'unauthorized', '请先登录');
         const b = await body();
@@ -602,9 +625,16 @@ export default {
           if (n.length < 2) return fail(400, 'bad_nickname', '昵称至少 2 个字');
           const other = await store.getUserByNickname(n);
           if (other && other.id !== viewer.id) return fail(409, 'nickname_taken', '这个昵称已经有人用了');
-          patch.nickname = n;
+          const wn = checkText(n);
+        if (wn.hit) return fail(400, 'blocked_content', wn.message);
+        patch.nickname = n;
         }
-        if (b.bio !== undefined) patch.bio = String(b.bio).slice(0, 80);
+        if (b.bio !== undefined) {
+          const bioText = String(b.bio).slice(0, 80);
+          const wb = checkText(bioText);
+          if (wb.hit) return fail(400, 'blocked_content', wb.message);
+          patch.bio = bioText;
+        }
         if (b.bioPublic !== undefined) patch.bio_public = b.bioPublic ? 1 : 0;
         if (b.favChar !== undefined) patch.fav_char = String(b.favChar).slice(0, 20);
         if (b.uidGame !== undefined) patch.uid_game = String(b.uidGame).replace(/[^0-9]/g, '').slice(0, 12);

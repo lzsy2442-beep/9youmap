@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS users (
   nickname TEXT NOT NULL,
   avatar TEXT DEFAULT 'umbrella',
   bio TEXT DEFAULT '',
+  bio_public INTEGER DEFAULT 0,
   fav_char TEXT DEFAULT '',
   server_key TEXT NOT NULL,
   city_code TEXT,
@@ -59,6 +60,8 @@ CREATE TABLE IF NOT EXISTS touches (
   to_marker TEXT NOT NULL,
   to_user TEXT NOT NULL,
   kind TEXT NOT NULL CHECK (kind IN ('knock','give')),
+  note TEXT DEFAULT '',
+  seen INTEGER DEFAULT 0,
   created_at TEXT NOT NULL
 );
 
@@ -87,6 +90,12 @@ CREATE TABLE IF NOT EXISTS codes (
   sent_at INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL,
+  updated_at TEXT
+);
+
 CREATE TABLE IF NOT EXISTS weather_cache (
   city_code TEXT PRIMARY KEY,
   payload TEXT NOT NULL,
@@ -98,9 +107,18 @@ CREATE TABLE IF NOT EXISTS notices (
   title TEXT NOT NULL,
   body TEXT NOT NULL,
   level TEXT DEFAULT 'info',
+  category TEXT DEFAULT 'notice',
   pinned INTEGER DEFAULT 0,
   created_at TEXT NOT NULL,
   expires_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS media (
+  id TEXT PRIMARY KEY,
+  mime TEXT NOT NULL,
+  data TEXT NOT NULL,
+  size INTEGER NOT NULL,
+  created_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS reports (
@@ -152,7 +170,7 @@ export function createUser({ email, nickname, serverKey, cityCode, cityName, pre
 export function updateProfile(userId, patch) {
   const fields = [];
   const values = [];
-  for (const k of ['nickname', 'bio', 'fav_char', 'avatar', 'uid_game', 'uid_public', 'precision', 'city_code', 'city_name']) {
+  for (const k of ['nickname', 'bio', 'bio_public', 'fav_char', 'avatar', 'uid_game', 'uid_public', 'precision', 'city_code', 'city_name']) {
     if (patch[k] !== undefined) { fields.push(`${k} = ?`); values.push(patch[k]); }
   }
   if (!fields.length) return getUserById(userId);
@@ -183,7 +201,7 @@ export function getMarker(id) {
 
 export function listMarkers({ since = 0, limit = 20000 } = {}) {
   return db.prepare(`
-    SELECT m.*, u.nickname, u.server_key, u.fav_char, u.avatar, u.uid_game, u.uid_public, u.is_seed,
+    SELECT m.*, u.nickname, u.server_key, u.fav_char, u.bio, u.bio_public, u.avatar, u.uid_game, u.uid_public, u.is_seed,
            s.name AS server_name, s.short AS server_short, s.color AS server_color, s.region AS server_region
     FROM markers m
     JOIN users u ON u.id = m.user_id
@@ -216,7 +234,7 @@ export function countMain(userId) {
 export function listAround(lat, lng, { radiusKm = 50, limit = 40 } = {}) {
   // 先用 1 度网格粗筛，再精算距离（数据量小，够用）
   const box = db.prepare(`
-    SELECT m.*, u.nickname, u.server_key, u.fav_char, u.avatar, u.uid_game, u.uid_public,
+    SELECT m.*, u.nickname, u.server_key, u.fav_char, u.bio, u.bio_public, u.avatar, u.uid_game, u.uid_public,
            s.name AS server_name, s.short AS server_short, s.color AS server_color
     FROM markers m
     JOIN users u ON u.id = m.user_id
@@ -245,7 +263,7 @@ export function stats() {
 }
 
 // ── 互动 ────────────────────────────────────────────────────
-export function addTouch(fromUser, markerId, kind) {
+export function addTouch(fromUser, markerId, kind, note = '') {
   const m = getMarker(markerId);
   if (!m) return { ok: false, error: 'marker_not_found' };
   if (m.user_id === fromUser) return { ok: false, error: 'self' };
@@ -261,11 +279,15 @@ export function addTouch(fromUser, markerId, kind) {
   }
 
   // 同一天重复同类互动不再记录
-  const dup = db.prepare(`SELECT 1 FROM touches WHERE from_user=? AND to_marker=? AND kind=? AND created_at>?`)
+  const dup = db.prepare(`SELECT id FROM touches WHERE from_user=? AND to_marker=? AND kind=? AND created_at>?`)
     .get(fromUser, markerId, kind, new Date(Date.now() - 86400e3).toISOString());
+  const text = String(note || '').trim().slice(0, 200);
   if (!dup) {
-    db.prepare('INSERT INTO touches (from_user,to_marker,to_user,kind,created_at) VALUES (?,?,?,?,?)')
-      .run(fromUser, markerId, m.user_id, kind, now());
+    db.prepare('INSERT INTO touches (from_user,to_marker,to_user,kind,note,seen,created_at) VALUES (?,?,?,?,?,0,?)')
+      .run(fromUser, markerId, m.user_id, kind, text, now());
+  } else if (text) {
+    // 同一天同一动作再发一次，视为补充留言
+    db.prepare('UPDATE touches SET note = ? WHERE id = ?').run(text, dup.id);
   }
 
   // 互相「递伞」→ 同伞之交
@@ -291,14 +313,44 @@ export function countFriends(userId) {
   return db.prepare('SELECT COUNT(*) AS n FROM friends WHERE a=? OR b=?').get(userId, userId).n;
 }
 
+/** 同伞之交：带对方主伞坐标，方便「跳过去看看」 */
 export function listFriends(userId) {
   return db.prepare(`
-    SELECT u.id,u.nickname,u.server_key,s.name AS server_name,s.color AS server_color,f.since
+    SELECT u.id, u.nickname, u.server_key, u.fav_char, u.bio,
+           s.name AS server_name, s.color AS server_color, s.short AS server_short,
+           f.since,
+           m.id AS marker_id, m.lat, m.lng, m.label
     FROM friends f
-    JOIN users u ON u.id = CASE WHEN f.a=? THEN f.b ELSE f.a END
-    LEFT JOIN servers s ON s.key=u.server_key
-    WHERE f.a=? OR f.b=? ORDER BY f.since DESC
+    JOIN users u ON u.id = CASE WHEN f.a = ? THEN f.b ELSE f.a END
+    LEFT JOIN servers s ON s.key = u.server_key
+    LEFT JOIN markers m ON m.id = (
+      SELECT id FROM markers WHERE user_id = u.id AND kind = 'umbrella' AND visible = 1
+      ORDER BY created_at LIMIT 1
+    )
+    WHERE f.a = ? OR f.b = ?
+    ORDER BY f.since DESC
   `).all(userId, userId, userId);
+}
+
+/** 我收到过的敲伞沿 / 递伞（谁、什么时候、TA 的伞在哪） */
+export function listTouchesReceived(userId, limit = 40) {
+  return db.prepare(`
+    SELECT t.id, t.kind, t.created_at, t.from_user, t.note, t.seen,
+           u.nickname AS from_nickname,
+           u.server_key AS from_server_key,
+           s.name AS from_server_name, s.short AS from_server_short, s.color AS from_server_color,
+           m.id AS from_marker_id, m.lat AS from_lat, m.lng AS from_lng, m.label AS from_label
+    FROM touches t
+    JOIN users u ON u.id = t.from_user
+    LEFT JOIN servers s ON s.key = u.server_key
+    LEFT JOIN markers m ON m.id = (
+      SELECT id FROM markers WHERE user_id = t.from_user AND kind = 'umbrella' AND visible = 1
+      ORDER BY created_at LIMIT 1
+    )
+    WHERE t.to_user = ?
+    ORDER BY t.created_at DESC
+    LIMIT ?
+  `).all(userId, limit);
 }
 
 // ── 同意记录 ────────────────────────────────────────────────
@@ -368,11 +420,19 @@ export function listNotices(limit = 30) {
   `).all(now(), limit);
 }
 
-export function addNotice({ title, body, level = 'info', pinned = 0, expiresAt = null }) {
+export const NOTICE_CATEGORIES = {
+  notice: '公告',
+  maintenance: '维护公告',
+  feature: '功能上新',
+  dev: '开发者提醒'
+};
+
+export function addNotice({ title, body, level = 'info', category = 'notice', pinned = 0, expiresAt = null }) {
+  const cat = Object.prototype.hasOwnProperty.call(NOTICE_CATEGORIES, category) ? category : 'notice';
   const info = db.prepare(`
-    INSERT INTO notices (title, body, level, pinned, created_at, expires_at)
-    VALUES (?, ?, ?, ?, ?, ?)
-  `).run(title, body, level, pinned ? 1 : 0, now(), expiresAt);
+    INSERT INTO notices (title, body, level, category, pinned, created_at, expires_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(title, body, level, cat, pinned ? 1 : 0, now(), expiresAt);
   return db.prepare('SELECT * FROM notices WHERE id = ?').get(info.lastInsertRowid);
 }
 
@@ -403,9 +463,9 @@ export function seedNotices() {
   return { seeded: true };
 }
 // ── 举报 ────────────────────────────────────────────────────
-export function addReport({ targetType, targetId, reason, fromUser }) {
-  db.prepare('INSERT INTO reports (target_type,target_id,reason,from_user,created_at) VALUES (?,?,?,?,?)')
-    .run(targetType, targetId, reason, fromUser ?? '', now());
+export function addReport({ targetType, targetId, reason, detail, fromUser }) {
+  db.prepare('INSERT INTO reports (target_type,target_id,reason,detail,from_user,created_at) VALUES (?,?,?,?,?,?)')
+    .run(targetType, targetId, reason, detail || '', fromUser || '', now());
 }
 
 // ── 种子数据 ────────────────────────────────────────────────
@@ -445,6 +505,53 @@ const SEED_CITIES = [
   ['泉州', 24.87, 118.68], ['烟台', 37.46, 121.45], ['洛阳', 34.62, 112.45],
   ['桂林', 25.27, 110.29], ['三亚', 18.25, 109.51]
 ];
+
+/** 轻量迁移：老库补上后来新增的列（幂等，失败忽略） */
+export function migrate() {
+  // 老库补建后加的表
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS settings (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL,
+      updated_at TEXT
+    );
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS media (
+      id TEXT PRIMARY KEY,
+      mime TEXT NOT NULL,
+      data TEXT NOT NULL,
+      size INTEGER NOT NULL,
+      created_at TEXT NOT NULL
+    );
+  `);
+  const rcols = db.prepare('PRAGMA table_info(reports)').all().map((c) => c.name);
+  if (rcols.length && !rcols.includes('detail')) {
+    db.exec("ALTER TABLE reports ADD COLUMN detail TEXT DEFAULT ''");
+  }
+
+  const tcols = db.prepare('PRAGMA table_info(touches)').all().map((c) => c.name);
+  if (tcols.length && !tcols.includes('note')) {
+    db.exec("ALTER TABLE touches ADD COLUMN note TEXT DEFAULT ''");
+  }
+  if (tcols.length && !tcols.includes('seen')) {
+    db.exec('ALTER TABLE touches ADD COLUMN seen INTEGER DEFAULT 0');
+  }
+
+  const ncols = db.prepare('PRAGMA table_info(notices)').all().map((c) => c.name);
+  if (ncols.length && !ncols.includes('category')) {
+    db.exec("ALTER TABLE notices ADD COLUMN category TEXT DEFAULT 'notice'");
+  }
+
+  const cols = db.prepare("PRAGMA table_info(users)").all().map((c) => c.name);
+  const want = [['bio_public', 'INTEGER DEFAULT 0']];
+  for (const [name, type] of want) {
+    if (!cols.includes(name)) {
+      try { db.exec(`ALTER TABLE users ADD COLUMN ${name} ${type}`); } catch { /* 已存在 */ }
+    }
+  }
+}
 
 export function seedIfEmpty() {
   const n = db.prepare('SELECT COUNT(*) AS n FROM markers').get().n;
@@ -582,6 +689,11 @@ export function adminListReports() {
   return db.prepare(`
     SELECT r.*,
            u.nickname AS reporter,
+           tt.note AS target_note,
+           tt.kind AS target_touch_kind,
+           tt.created_at AS target_touch_at,
+           tn.id AS note_author_id,
+           tn.nickname AS note_author,
            m.label AS target_marker_label,
            m.kind AS target_marker_kind,
            m.lat AS target_lat,
@@ -594,6 +706,8 @@ export function adminListReports() {
     FROM reports r
     LEFT JOIN users u ON u.id = r.from_user
     LEFT JOIN markers m ON m.id = r.target_id AND r.target_type = 'marker'
+    LEFT JOIN touches tt ON tt.id = r.target_id AND r.target_type = 'touch'
+    LEFT JOIN users tn ON tn.id = tt.from_user
     LEFT JOIN users t ON t.id = m.user_id
     LEFT JOIN servers s ON s.key = t.server_key
     ORDER BY r.created_at DESC LIMIT 100
@@ -642,4 +756,79 @@ export function adminUpdateNotice(id, patch) {
   values.push(id);
   db.prepare(`UPDATE notices SET ${fields.join(', ')} WHERE id = ?`).run(...values);
   return db.prepare('SELECT * FROM notices WHERE id = ?').get(id);
+}
+
+// ── 站点设置（key-value）──────────────────────────────────
+export function getSetting(key) {
+  const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key);
+  return row ? row.value : null;
+}
+
+export function setSetting(key, value) {
+  db.prepare(`
+    INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+  `).run(key, String(value ?? ''), new Date().toISOString());
+}
+
+/** 测试白名单：一行（或逗号/空格分隔）一个邮箱，返回小写数组 */
+export function readWhitelist() {
+  const raw = getSetting('test_emails') || '';
+  return String(raw)
+    .split(/[,;\s]+/)
+    .map((s) => s.trim().toLowerCase())
+    .filter((s) => s.includes('@'));
+}
+
+export function writeWhitelist(raw) {
+  const list = String(raw || '')
+    .split(/[,;\s]+/)
+    .map((s) => s.trim().toLowerCase())
+    .filter((s) => /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(s));
+  setSetting('test_emails', list.join('\n'));
+  return list;
+}
+
+// ── 图片（存在 D1/SQLite 里，base64）──────────────────────
+export function saveMedia({ id, mime, data, size }) {
+  db.prepare('INSERT INTO media (id, mime, data, size, created_at) VALUES (?, ?, ?, ?, ?)')
+    .run(id, mime, data, size, new Date().toISOString());
+}
+
+export function getMedia(id) {
+  return db.prepare('SELECT id, mime, data FROM media WHERE id = ?').get(id) || null;
+}
+
+/** 未读互动数（被敲伞沿 / 被递伞，且还没看过） */
+export function countUnreadTouches(userId) {
+  const row = db.prepare('SELECT COUNT(*) AS n FROM touches WHERE to_user = ? AND seen = 0').get(userId);
+  return row ? row.n : 0;
+}
+
+/** 把收到的互动全部标记为已读 */
+export function markTouchesSeen(userId) {
+  const r = db.prepare('UPDATE touches SET seen = 1 WHERE to_user = ? AND seen = 0').run(userId);
+  return r.changes || 0;
+}
+
+/** 单条互动（举报留言时用来校验归属） */
+export function getTouch(id) {
+  return db.prepare('SELECT id, from_user, to_user, to_marker, kind, note FROM touches WHERE id = ?').get(id) || null;
+}
+
+/** 注销账号：删掉这个人的全部数据 */
+export function deleteUser(userId) {
+  db.exec('BEGIN');
+  try {
+    db.prepare('DELETE FROM markers WHERE user_id = ?').run(userId);
+    db.prepare('DELETE FROM touches WHERE from_user = ? OR to_user = ?').run(userId, userId);
+    db.prepare('DELETE FROM friends WHERE a = ? OR b = ?').run(userId, userId);
+    db.prepare("UPDATE reports SET from_user = '' WHERE from_user = ?").run(userId);
+    db.prepare('DELETE FROM users WHERE id = ?').run(userId);
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+  return true;
 }

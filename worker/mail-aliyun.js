@@ -47,7 +47,7 @@ export async function sendMailAliyun({
     SignatureVersion: '1.0',
     SignatureNonce: crypto.randomUUID(),
     Timestamp: new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'),
-    AccountName: accountName,   // 发信地址，如 no-reply@jiyoumap.top
+    AccountName: accountName,   // 发信地址，如 no-reply@jiuyoumap.top
     AddressType: '1',           // 1 = 随机账号：触发邮件专用，不需要逐个验证发信地址
     ReplyToAddress: 'false',
     ToAddress: to,
